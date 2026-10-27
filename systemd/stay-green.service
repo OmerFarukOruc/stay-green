@@ -1,0 +1,19 @@
+# Marks your Teams status Available once, if now is in your schedule. stay-green.timer starts it every 4 minutes.
+# A failed run usually means the sign-in expired or was revoked; sign in again with `stay-green login`.
+#   run now:  systemctl --user start stay-green.service
+#   result:   journalctl --user -u stay-green.service -n 20
+[Unit]
+Description=Mark the Teams status Available
+
+[Service]
+Type=oneshot
+# A oneshot service has no start timeout by default, and a stuck run would hold back the next ones.
+TimeoutStartSec=2min
+# Your working hours: rules of days and time ranges, separated by semicolons, such as
+# "Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00". A range ends before its end time.
+Environment="STAY_GREEN_SCHEDULE=Mon-Fri 09:00-18:00"
+# The IANA time zone of the schedule. Without this line, the schedule uses this computer's time zone.
+Environment=STAY_GREEN_TIME_ZONE=Europe/Istanbul
+# The path assumes the repository is cloned to ~/stay-green. To run in a container instead, use:
+# ExecStart=%h/stay-green/systemd/stay-green-container run
+ExecStart=%h/stay-green/stay-green run

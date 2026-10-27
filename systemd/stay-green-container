@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Runs ../stay-green in a throwaway rootless Podman container from the official python:3.13-alpine image.
+# The container sees only the script, read-only, and the sign-in folder, and it has no Linux capabilities.
+#   stay-green-container run      mark the status Available if now is in the schedule
+#   stay-green-container status   print the current Teams status
+# Sign in with stay-green login first: the sign-in needs a browser, so it does not run in the container.
+# The timer starts a run every 4 minutes, so the wrapper asks the registry for a newer image only once a day
+# (--pull=newer, which keeps the local image when the registry fails) and uses the local image otherwise.
+# --log-driver=none keeps conmon from writing the output to the journal a second time; podman still prints it.
+# --events-backend=none keeps podman's 7 container event lines per run out of the journal.
+# label=disable lets the container read the bind mounts on a host with SELinux.
+# The schedule settings pass through, and /etc/localtime gives the container this computer's time zone.
+set -euo pipefail
+here=$(dirname "$(readlink -f "$0")")
+state=${XDG_STATE_HOME:-$HOME/.local/state}/stay-green
+stamp=$state/.image-checked
+pull=missing
+if [[ -d $state && ( ! -e $stamp || -n $(find "$stamp" -mmin +1440) ) ]]; then
+  pull=newer
+  (umask 077 && touch "$stamp")
+fi
+zone=()
+[[ -e /etc/localtime ]] && zone=(-v /etc/localtime:/etc/localtime:ro)
+exec podman --events-backend=none run --rm --pull="$pull" --read-only --cap-drop=all --log-driver=none \
+  --security-opt=no-new-privileges --security-opt=label=disable --memory=64m \
+  -e STAY_GREEN_SCHEDULE -e STAY_GREEN_TIME_ZONE "${zone[@]}" \
+  -v "$here/../stay-green:/stay-green:ro" \
+  -v "$state:/root/.local/state/stay-green" \
+  docker.io/library/python:3.13-alpine python3 /stay-green "$@"

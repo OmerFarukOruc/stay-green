@@ -1,0 +1,160 @@
+# stay-green reference
+
+## Commands
+
+`stay-green` is one Python script. It needs Python 3.9 or newer, for `zoneinfo`, and nothing beyond the standard library.
+
+| Command | Effect |
+|---|---|
+| `stay-green login` | Opens the Microsoft sign-in in the browser and waits up to 5 minutes for the redirect to `http://localhost:<port>`. Stores the refresh token in the state folder on this computer, deletes `access-token` and `renewal-failed` there, and prints `Stored the sign-in in <folder>. Test it with: <path of the script> status`. |
+| `stay-green login HOST` | Runs the same sign-in, then stores the refresh token in the state folder on `HOST` through `ssh -- HOST sh -c '...'`, deletes `access-token` and `renewal-failed` there, and prints `Stored the sign-in on HOST. Test it there with the status command of stay-green.` |
+| `stay-green run` | Ends at once when now is outside the schedule. Otherwise reads your presence. When Graph reports you out of office, prints that and stops. Otherwise marks the stay-green presence session Available for 15 minutes. |
+| `stay-green status` | Prints `<availability> / <activity>`, with `, out of office` added when Graph reports it. Then prints `now is inside the schedule` or `now is outside the schedule`. |
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | The command succeeded. `run` also exits 0 outside the schedule and when you are out of office. |
+| 1 | The command failed. An expected error prints one line that starts with `stay-green:`. An unexpected one prints a Python traceback. |
+| 64 | The arguments are wrong. The script prints `usage: stay-green login [HOST] \| stay-green run \| stay-green status`. |
+
+`systemd/stay-green-container run` and `systemd/stay-green-container status` run the same commands in a rootless Podman container from `docker.io/library/python:3.13-alpine`:
+
+- The first run of a day uses `--pull=newer`, which checks the registry for a newer image and keeps the local image when the registry fails. The wrapper records that check in `.image-checked` in the state folder. The other runs use `--pull=missing`, which pulls only when no local image exists.
+- The container has a read-only root file system, no Linux capabilities, `no-new-privileges`, SELinux label separation turned off for the container, and 64 MB of memory.
+- It mounts the script read-only and the state folder read-write. When the host has `/etc/localtime`, it mounts that file read-only too. It passes `STAY_GREEN_SCHEDULE` and `STAY_GREEN_TIME_ZONE` through.
+- `--log-driver=none` and `--events-backend=none` keep the journal to the script's own output.
+
+`login` does not work in the container, because it needs a browser.
+
+## Schedule
+
+The script reads its schedule from `STAY_GREEN_SCHEDULE` and its time zone from `STAY_GREEN_TIME_ZONE`. The Worker reads the same values from `SCHEDULE` and `TIME_ZONE` in `worker/wrangler.jsonc`.
+
+| Setting | Default | Format |
+|---|---|---|
+| `STAY_GREEN_SCHEDULE`, `SCHEDULE` | `Mon-Fri 09:00-18:00`, in the script and in the Worker. | Rules separated by `;`. |
+| `STAY_GREEN_TIME_ZONE`, `TIME_ZONE` | The script uses the computer's time zone. The Worker uses UTC. | An IANA time zone name in its exact case, such as `Europe/Istanbul`. |
+
+The shipped `systemd/stay-green.service` and `worker/wrangler.jsonc` set the schedule to `Mon-Fri 09:00-18:00` and the time zone to `Europe/Istanbul`. Edit both values before you start the timer or deploy the Worker.
+
+A rule is a list of days, one space, and a list of time ranges:
+
+- Days are `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`, and case matters. A day range such as `Mon-Fri` includes both ends. A range can wrap across the weekend, such as `Fri-Mon`. Commas separate several days or day ranges, with no spaces, such as `Mon,Wed,Fri-Sat`.
+- A time range is `HH:MM-HH:MM` with two-digit hours and minutes. It includes its start and ends before its end, so `09:00-18:00` covers 09:00 to 17:59. `24:00` can end a range. A range cannot cross midnight, so write two rules instead. Commas separate several ranges.
+- When rules name the same day, the day gets the ranges of all of them.
+
+Examples:
+
+| Schedule | Covers |
+|---|---|
+| `Mon-Fri 09:00-18:00` | Weekdays from 09:00 to 17:59. |
+| `Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00` | A lunch break Monday to Thursday, and a short Friday. |
+| `Sun-Thu 08:00-17:00` | A Sunday to Thursday week. |
+
+A run checks the schedule against the current time in the time zone, so a daylight saving change needs no edit. The Worker checks it again before it calls `setPresence`.
+
+## Files
+
+The state folder is `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green/` when `XDG_STATE_HOME` is not set. The script creates the folder with mode 700 and each file with mode 600.
+
+| File | Content |
+|---|---|
+| `refresh-token` | The refresh token, as text. Each renewal replaces it. |
+| `access-token` | JSON with `token`, the access token, and `expires`, its expiry as a Unix time in seconds. The script uses it until 5 minutes before `expires`. A missing or damaged file means a renewal. |
+| `.image-checked` | Written only by `systemd/stay-green-container`. Its modification time is the time of the last image check. |
+| `renewal-failed` | The error of a renewal that the sign-in service refused. While this file exists and the access token has expired, each run fails without contacting Microsoft. `login` deletes it. |
+
+The sign-in service refuses a renewal when it answers with one of the error codes `invalid_grant`, `interaction_required`, `consent_required`, `invalid_client`, or `unauthorized_client`. Any other failure fails only that run, such as a network error, a 429 or 5xx status, or an error page without an error code.
+
+## systemd units
+
+`systemd/stay-green.timer` starts `stay-green.service` with `OnCalendar=*-*-* *:00/4:00`, every 4 minutes around the clock. `AccuracySec=10s` starts each run within 10 seconds after its time. The timer has no `Persistent=`, so it does not catch up on runs that it missed while the computer was off.
+
+`systemd/stay-green.service` is a `oneshot` service with `ExecStart=%h/stay-green/stay-green run`, `TimeoutStartSec=2min`, and two `Environment=` lines that set `STAY_GREEN_SCHEDULE=Mon-Fri 09:00-18:00` and `STAY_GREEN_TIME_ZONE=Europe/Istanbul`.
+
+## Worker settings
+
+`worker/wrangler.jsonc` configures the Worker:
+
+| Setting | Value |
+|---|---|
+| `triggers.crons` | `*/4 * * * *`, in UTC. |
+| `vars.SCHEDULE` | The schedule. The shipped value is `Mon-Fri 09:00-18:00`. |
+| `vars.TIME_ZONE` | The time zone of the schedule. The shipped value is `Europe/Istanbul`. |
+| `kv_namespaces` | The `TOKENS` binding, with no `id`. The first `wrangler deploy` creates a namespace named `stay-green-tokens`, and later deploys reuse it. |
+| `workers_dev`, `preview_urls` | `false`. The Worker has no URL. |
+| `observability.enabled` | `true`, so Workers Logs keeps each run's log lines. |
+
+A run outside the schedule ends before it reads KV.
+
+The `TOKENS` namespace holds two keys:
+
+| Key | Content |
+|---|---|
+| `refresh-token` | The refresh token, as text. You upload the first one, and each renewal replaces it. |
+| `cache` | JSON with `hash`, the SHA-256 of the refresh token that the entry belongs to, and either `token` and `expires`, the access token and its expiry in Unix milliseconds, or `rejected`, the error of a refused renewal. The Worker ignores the entry when `hash` does not match the current refresh token. |
+
+## Requests to Microsoft
+
+All requests use the app Microsoft Graph Command Line Tools, client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`, and the scope `offline_access https://graph.microsoft.com/Presence.ReadWrite`.
+
+| Request | When |
+|---|---|
+| `GET https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize` | Once, at `login`. The script opens it in your browser. |
+| `POST https://login.microsoftonline.com/organizations/oauth2/v2.0/token` with `grant_type=authorization_code` | Once, at `login`. The request uses PKCE. |
+| `POST https://login.microsoftonline.com/organizations/oauth2/v2.0/token` with `grant_type=refresh_token` | When the access token expires within 5 minutes, about once an hour. |
+| `GET https://graph.microsoft.com/v1.0/me/presence` | At each `run` inside the schedule, and at each `status`. |
+| `POST https://graph.microsoft.com/v1.0/users/{id}/presence/setPresence` | At each `run` inside the schedule that is not out of office. |
+
+The `setPresence` body is:
+
+```json
+{
+	"sessionId": "14d82eec-204b-4c2f-b7e8-296a70dab67e",
+	"availability": "Available",
+	"activity": "Available",
+	"expirationDuration": "PT15M"
+}
+```
+
+## Logs
+
+| Where it runs | How to read the log |
+|---|---|
+| systemd | `journalctl --user -u stay-green.service` |
+| Cloudflare Worker | `npx wrangler@4 tail` from the `worker` folder, or **Observability** on the Worker's dashboard page. The free plan keeps logs for 3 days. |
+
+A successful run inside the schedule logs one of these lines:
+
+| Line | Meaning |
+|---|---|
+| `marked Available; the status was <availability>` | stay-green called `setPresence`. The availability is the one from before the call. |
+| `out of office; left the status at <availability>` | Graph reported you out of office, so stay-green made no call. |
+| `the schedule ended during this run; left the status at <availability>` | Worker only. The run started inside the schedule and reached `setPresence` after it ended. |
+
+A run outside the schedule logs no line of its own.
+
+## Errors
+
+The script prints each expected error as one line that starts with `stay-green:`. The Worker throws each error, so the error appears as the run's exception.
+
+| Error | Cause | Recovery |
+|---|---|---|
+| `no sign-in in <path>; sign in with: stay-green login` | The state folder has no `refresh-token`. | `stay-green login`, or `stay-green login HOST` from a computer with a browser. |
+| `no refresh-token key in TOKENS; ...` | Worker only. The namespace has no `refresh-token` key. | An upload, as in [the Workers guide](how-to-run-on-cloudflare-workers.md#upload-the-refresh-token). |
+| `the sign-in was rejected earlier (<error>)` | An earlier renewal was refused, and stay-green does not repeat a refused renewal. | A new sign-in. |
+| `400 invalid_grant: AADSTS...` | The refresh token expired or was revoked, or a policy refused the renewal. The next run fails with `the sign-in was rejected earlier`. | A new sign-in. If it fails the same way, the AADSTS code in [Microsoft's error code list](https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes) names the cause. |
+| `400 interaction_required: AADSTS...` | The renewal needs another sign-in step, such as multifactor authentication. | A new sign-in. |
+| `401 ...` from Graph | Graph rejected the access token, such as after a revocation. stay-green deletes the cached access token. | The next run renews the access token. If Microsoft refuses that renewal, the sign-in errors above apply. |
+| `403 ...` or `404 ...` from Graph | Graph refused the request, such as for a missing permission. Graph errors never mark the renewal as refused. | The next run tries again. If the error repeats, a new sign-in, or an admin who allows `Presence.ReadWrite`. |
+| `0 unreachable: ...` | No answer: a DNS or connection error, a dropped connection, or a timeout. | The next run tries again. |
+| `0 not-json: the answer is not a JSON object` | A successful answer that is not a JSON object, such as a proxy's login page. | The next run tries again. |
+| `429 ...` or `5xx ...`, or `<status>: the answer has no error code` | Microsoft or a proxy throttled or failed the request. | The next run tries again. |
+| `unknown day in STAY_GREEN_SCHEDULE: ...`, `bad time range in STAY_GREEN_SCHEDULE: ...`, or the same with `SCHEDULE` | The schedule does not match the format. | A corrected schedule. |
+| `unknown time zone in STAY_GREEN_TIME_ZONE: ...`, or `Invalid time zone specified: ...` in the Worker | The time zone is not an IANA name. | A corrected time zone. |
+| `no sign-in within 5 minutes` | `login` got no redirect from the browser in time. | Another `login`. |
+| `sign-in failed: <error>: <description>` | The Microsoft sign-in page returned an error, such as a refused consent. | The description names the cause. An admin may have to allow the app or the permission. |
+| `the sign-in did not grant Presence.ReadWrite: <scopes>` | The sign-in succeeded without the permission that stay-green needs. | An admin who allows `Presence.ReadWrite` for Microsoft Graph Command Line Tools. |
+| `could not store the sign-in on <HOST>` | The `ssh` command failed. | A working `ssh HOST` from this computer. |

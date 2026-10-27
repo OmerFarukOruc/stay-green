@@ -1,0 +1,22 @@
+{
+	"name": "stay-green",
+	"main": "src/index.js",
+	"compatibility_date": "2026-10-01",
+	// The Worker has no URL; only the cron starts it.
+	"workers_dev": false,
+	"preview_urls": false,
+	"triggers": {
+		// Cron Triggers run in UTC. The code checks SCHEDULE in TIME_ZONE.
+		"crons": ["*/4 * * * *"],
+	},
+	// With no id, the first `wrangler deploy` creates the namespace. In a terminal, it also writes the id here.
+	"kv_namespaces": [{ "binding": "TOKENS" }],
+	"vars": {
+		// Rules of days and time ranges, separated by semicolons, such as
+		// "Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00". A range ends before its end time.
+		"SCHEDULE": "Mon-Fri 09:00-18:00",
+		// The IANA time zone of SCHEDULE, such as America/New_York.
+		"TIME_ZONE": "Europe/Istanbul",
+	},
+	"observability": { "enabled": true },
+}
