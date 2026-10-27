@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import fcntl
 import hashlib
 import http.client
 import http.server
@@ -212,9 +211,10 @@ def login(host: str | None) -> None:
         folder.mkdir(parents=True, exist_ok=True)
         folder.chmod(0o700)
         with locked(folder):
-            write_private(folder / "refresh-token", tokens["refresh_token"])
+            # Dropped first, so a sign-in that stops halfway leaves the old refresh token without stale state.
             for name in ("access-token", "renewal-failed"):
                 (folder / name).unlink(missing_ok=True)
+            write_private(folder / "refresh-token", tokens["refresh_token"])
         print(f"Stored the sign-in in {folder}. Test it with: {shlex.quote(os.path.abspath(sys.argv[0]))} status")
         return
     # sh runs the command, whatever the login shell on HOST is. read fails when the connection drops before the
@@ -222,8 +222,9 @@ def login(host: str | None) -> None:
     # one in one rename, under the same lock that run and status take.
     remote = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && chmod 700 "$d"'
               ' && IFS= read -r token && [ -n "$token" ] && exec 9>>"$d/lock" && flock 9'
-              ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && printf "%s\\n" "$token" > "$t"'
-              ' && mv -f "$t" "$d/refresh-token" && rm -f "$d/access-token" "$d/renewal-failed"')
+              ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && rm -f "$d/access-token" "$d/renewal-failed"'
+              ' && { printf "%s\\n" "$token" > "$t" && sync && mv -f "$t" "$d/refresh-token"'
+              ' || { rm -f "$t"; exit 1; }; }')
     stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(remote)],
                             input=tokens["refresh_token"] + "\n", text=True, check=False)
     if stored.returncode != 0:
@@ -235,17 +236,31 @@ def login(host: str | None) -> None:
 def locked(folder: Path):
     # A renewal replaces both stored tokens, and a sign-in replaces the refresh token, so they take turns. Without
     # the lock, a run that renews during a sign-in writes the old account's tokens over the new sign-in.
-    with open(folder / "lock", "a") as file:
+    # fcntl exists only on Unix. login HOST never takes this lock, so it also runs on Windows.
+    import fcntl
+
+    try:
+        file = open(folder / "lock", "a")  # noqa: SIM115, the with below closes it
+    except OSError as error:
+        raise SystemExit(f"stay-green: cannot open {folder / 'lock'}: {error.strerror}") from None
+    with file:
         fcntl.flock(file, fcntl.LOCK_EX)
         yield
 
 
 def write_private(path: Path, text: str) -> None:
-    # mkstemp makes a private file with a unique name, so two runs that renew at once do not mix their writes.
+    # mkstemp makes a private file with a unique name. fsync puts the new content on disk before the rename
+    # replaces the old file, so a power loss leaves one of the two whole.
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    with os.fdopen(fd, "w") as file:
-        file.write(text)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def access_token(state: Path) -> str:
