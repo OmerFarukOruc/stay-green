@@ -2,7 +2,7 @@
 
 ## Commands
 
-`stay-green` is one Python script. It needs Python 3.9 or newer, for `zoneinfo`, and nothing beyond the standard library.
+`stay-green` is a single Python script that requires Python 3.9 or newer for `zoneinfo` and uses the standard library with no third-party packages.
 
 | Command | Effect |
 |---|---|
@@ -19,31 +19,31 @@ Exit codes:
 | 1 | The command failed. An expected error prints one line that starts with `stay-green:`. An unexpected one prints a Python traceback. |
 | 64 | The arguments are wrong. The script prints `usage: stay-green login [HOST] \| stay-green run \| stay-green status`. |
 
-`systemd/stay-green-container run` and `systemd/stay-green-container status` run the same commands in a rootless Podman container from `docker.io/library/python:3.13-alpine`:
+`systemd/stay-green-container run` and `systemd/stay-green-container status` execute those subcommands inside a rootless Podman container built on `docker.io/library/python:3.13-alpine`:
 
-- The first run of a day uses `--pull=newer`, which checks the registry for a newer image and keeps the local image when the registry fails. The wrapper records that check in `.image-checked` in the state folder. The other runs use `--pull=missing`, which pulls only when no local image exists.
-- The container has a read-only root file system, no Linux capabilities, `no-new-privileges`, SELinux label separation turned off for the container, and 64 MB of memory.
-- It mounts the script read-only and the state folder read-write. When the host has `/etc/localtime`, it mounts that file read-only too. It passes `STAY_GREEN_SCHEDULE` and `STAY_GREEN_TIME_ZONE` through.
-- `--log-driver=none` and `--events-backend=none` keep the journal to the script's own output.
+- The first run of each calendar day passes `--pull=newer` to check the registry for a newer image, falls back to the local image if the registry is unreachable, and records the check's timestamp in `.image-checked` in the state folder. Subsequent runs that day pass `--pull=missing` and pull an image if none exists on disk.
+- The container runs with a read-only root file system, all Linux capabilities dropped, `no-new-privileges`, SELinux label separation disabled for the container, and a 64 MB memory limit.
+- The wrapper mounts the script read-only, mounts the state folder read-write, mounts `/etc/localtime` read-only when present on the host, and forwards `STAY_GREEN_SCHEDULE` and `STAY_GREEN_TIME_ZONE`.
+- `--log-driver=none` and `--events-backend=none` suppress Podman's own log and event entries so the journal captures the script's output alone.
 
-`login` does not work in the container, because it needs a browser.
+Because `login` opens a local browser, `systemd/stay-green-container` does not support `login`.
 
 ## Schedule
 
-The script reads its schedule from `STAY_GREEN_SCHEDULE` and its time zone from `STAY_GREEN_TIME_ZONE`. The Worker reads the same values from `SCHEDULE` and `TIME_ZONE` in `worker/wrangler.jsonc`.
+The Python script reads its schedule from `STAY_GREEN_SCHEDULE` and its time zone from `STAY_GREEN_TIME_ZONE`, while the Worker reads `SCHEDULE` and `TIME_ZONE` from `worker/wrangler.jsonc`.
 
 | Setting | Default | Format |
 |---|---|---|
 | `STAY_GREEN_SCHEDULE`, `SCHEDULE` | `Mon-Fri 09:00-18:00`, in the script and in the Worker. | Rules separated by `;`. |
 | `STAY_GREEN_TIME_ZONE`, `TIME_ZONE` | The script uses the computer's time zone. The Worker uses UTC. | An IANA time zone name in its exact case, such as `Europe/Istanbul`. |
 
-The shipped `systemd/stay-green.service` and `worker/wrangler.jsonc` set the schedule to `Mon-Fri 09:00-18:00` and the time zone to `Europe/Istanbul`. Edit both values before you start the timer or deploy the Worker.
+Both `systemd/stay-green.service` and `worker/wrangler.jsonc` ship with the schedule `Mon-Fri 09:00-18:00` and the time zone `Europe/Istanbul`. Change both before you start the timer or deploy the Worker.
 
-A rule is a list of days, one space, and a list of time ranges:
+Each rule consists of a day list, a single space, and a time-range list:
 
-- Days are `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`, and case matters. A day range such as `Mon-Fri` includes both ends. A range can wrap across the weekend, such as `Fri-Mon`. Commas separate several days or day ranges, with no spaces, such as `Mon,Wed,Fri-Sat`.
-- A time range is `HH:MM-HH:MM` with two-digit hours and minutes. It includes its start and ends before its end, so `09:00-18:00` covers 09:00 to 17:59. `24:00` can end a range. A range cannot cross midnight, so write two rules instead. Commas separate several ranges.
-- When rules name the same day, the day gets the ranges of all of them.
+- Day names are case-sensitive (`Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun`). Inclusive day ranges such as `Mon-Fri` can wrap across the weekend (`Fri-Mon`), and commas join multiple days or ranges without spaces (`Mon,Wed,Fri-Sat`).
+- Time ranges use `HH:MM-HH:MM` with two-digit hours and minutes, include the start minute, and exclude the end minute, so `09:00-18:00` matches 09:00 through 17:59. `24:00` is valid as an end time, commas join multiple ranges on the same day, and ranges that cross midnight require two separate rules.
+- Multiple rules that match the same day combine their time ranges.
 
 Examples:
 
@@ -53,11 +53,11 @@ Examples:
 | `Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00` | A lunch break Monday to Thursday, and a short Friday. |
 | `Sun-Thu 08:00-17:00` | A Sunday to Thursday week. |
 
-A run checks the schedule against the current time in the time zone, so a daylight saving change needs no edit. The Worker checks it again before it calls `setPresence`.
+Each run evaluates the schedule against the current wall-clock time in the configured time zone, so daylight saving transitions need no schedule changes. The Worker re-evaluates the schedule right before calling `setPresence`.
 
 ## Files
 
-The state folder is `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green/` when `XDG_STATE_HOME` is not set. The script creates the folder with mode 700 and each file with mode 600.
+The script stores state in `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green/` when `XDG_STATE_HOME` is unset, creating the directory with mode 700 and each file with mode 600.
 
 | File | Content |
 |---|---|
@@ -66,17 +66,17 @@ The state folder is `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green
 | `.image-checked` | Written only by `systemd/stay-green-container`. Its modification time is the time of the last image check. |
 | `renewal-failed` | The error of a renewal that the sign-in service refused. While this file exists and the access token has expired, each run fails without contacting Microsoft. `login` deletes it. |
 
-The sign-in service refuses a renewal when it answers with one of the error codes `invalid_grant`, `interaction_required`, `consent_required`, `invalid_client`, or `unauthorized_client`. Any other failure fails only that run, such as a network error, a 429 or 5xx status, or an error page without an error code.
+Microsoft's token endpoint refuses a renewal when it responds with `invalid_grant`, `interaction_required`, `consent_required`, `invalid_client`, or `unauthorized_client`. Transient failures such as network errors, HTTP 429 or 5xx responses, or error pages without an OAuth error code fail that run without recording a refused renewal.
 
 ## systemd units
 
-`systemd/stay-green.timer` starts `stay-green.service` with `OnCalendar=*-*-* *:00/4:00`, every 4 minutes around the clock. `AccuracySec=10s` starts each run within 10 seconds after its time. The timer has no `Persistent=`, so it does not catch up on runs that it missed while the computer was off.
+`systemd/stay-green.timer` triggers `stay-green.service` on `OnCalendar=*-*-* *:00/4:00` (every 4 minutes around the clock) with `AccuracySec=10s` so each invocation starts within 10 seconds of its scheduled mark. Because the unit omits `Persistent=`, systemd does not replay missed runs after the machine powers back on.
 
-`systemd/stay-green.service` is a `oneshot` service with `ExecStart=%h/stay-green/stay-green run`, `TimeoutStartSec=2min`, and two `Environment=` lines that set `STAY_GREEN_SCHEDULE=Mon-Fri 09:00-18:00` and `STAY_GREEN_TIME_ZONE=Europe/Istanbul`.
+`systemd/stay-green.service` runs as a `oneshot` unit with `ExecStart=%h/stay-green/stay-green run`, `TimeoutStartSec=2min`, and two `Environment=` assignments (`STAY_GREEN_SCHEDULE=Mon-Fri 09:00-18:00` and `STAY_GREEN_TIME_ZONE=Europe/Istanbul`).
 
 ## Worker settings
 
-`worker/wrangler.jsonc` configures the Worker:
+`worker/wrangler.jsonc` configures the Cloudflare Worker:
 
 | Setting | Value |
 |---|---|
@@ -87,9 +87,9 @@ The sign-in service refuses a renewal when it answers with one of the error code
 | `workers_dev`, `preview_urls` | `false`. The Worker has no URL. |
 | `observability.enabled` | `true`, so Workers Logs keeps each run's log lines. |
 
-A run outside the schedule ends before it reads KV.
+Invocations outside the schedule return before reading Workers KV.
 
-The `TOKENS` namespace holds two keys:
+The `TOKENS` KV namespace stores two keys:
 
 | Key | Content |
 |---|---|
@@ -98,7 +98,7 @@ The `TOKENS` namespace holds two keys:
 
 ## Requests to Microsoft
 
-All requests use the app Microsoft Graph Command Line Tools, client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`, and the scope `offline_access https://graph.microsoft.com/Presence.ReadWrite`.
+Every request authenticates as Microsoft Graph Command Line Tools (client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`) with the scope `offline_access https://graph.microsoft.com/Presence.ReadWrite`.
 
 | Request | When |
 |---|---|
@@ -108,7 +108,7 @@ All requests use the app Microsoft Graph Command Line Tools, client ID `14d82eec
 | `GET https://graph.microsoft.com/v1.0/me/presence` | At each `run` inside the schedule, and at each `status`. |
 | `POST https://graph.microsoft.com/v1.0/users/{id}/presence/setPresence` | At each `run` inside the schedule that is not out of office. |
 
-The `setPresence` body is:
+The `setPresence` request body is:
 
 ```json
 {
@@ -126,7 +126,7 @@ The `setPresence` body is:
 | systemd | `journalctl --user -u stay-green.service` |
 | Cloudflare Worker | `npx wrangler@4 tail` from the `worker` folder, or **Observability** on the Worker's dashboard page. The free plan keeps logs for 3 days. |
 
-A successful run inside the schedule logs one of these lines:
+Each successful run inside the schedule logs one of three lines:
 
 | Line | Meaning |
 |---|---|
@@ -134,11 +134,11 @@ A successful run inside the schedule logs one of these lines:
 | `out of office; left the status at <availability>` | Graph reported you out of office, so stay-green made no call. |
 | `the schedule ended during this run; left the status at <availability>` | Worker only. The run started inside the schedule and reached `setPresence` after it ended. |
 
-A run outside the schedule logs no line of its own.
+Runs outside the schedule emit no stay-green log line.
 
 ## Errors
 
-The script prints each expected error as one line that starts with `stay-green:`. The Worker throws each error, so the error appears as the run's exception.
+The Python script writes expected errors to standard error as a single line prefixed with `stay-green:`, whereas the Worker throws an exception that surfaces in the Worker log.
 
 | Error | Cause | Recovery |
 |---|---|---|

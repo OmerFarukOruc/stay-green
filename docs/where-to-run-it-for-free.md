@@ -1,18 +1,18 @@
 # Where to run stay-green for free
 
-stay-green has to run every 4 minutes in your working hours, from a place that can keep a refresh token and replace it after each renewal. Your own laptop is a poor place, because the reason you need stay-green is that your laptop sleeps or locks. This page ranks the free places that can run it, best first, and explains why I ruled out others. I checked the vendor pages in October 2026, and free plans change, so check the linked page before you rely on a limit.
+stay-green has to run every 4 minutes during your working hours on a host that can store a refresh token and overwrite it after each renewal. Running it on your own laptop defeats the purpose, because you need stay-green when that laptop sleeps or locks. I checked the free tiers below in October 2026 and ranked the working options from best to worst before listing the platforms I ruled out. Free tiers change, so verify the current limits on each linked vendor page before you rely on them.
 
 ## The places that run it
 
 ### 1. A Linux box you already have
 
-A Raspberry Pi, a home server, or any Linux computer that stays on all day runs the Python script and the systemd timer unchanged. It has no quota and no expiry. It also renews from your home IP address, which is the address your organization already sees when you work from home, if you also sign in from there. That matters, because renewals from a data center can look like a stolen refresh token. [The risks](risks.md) explain why.
+A Raspberry Pi, a home server, or any Linux machine that stays on all day runs the Python script and the systemd timer as shipped, with no quota or expiration date. If you sign in and run the timer on the same home network, token renewals come from the home IP address your organization sees during your workday, whereas renewals from a cloud data center can resemble a stolen refresh token, as [the risks](risks.md) explain.
 
-The cost is the power, and a box that has to stay on. Follow [run stay-green on a Linux box](how-to-run-on-a-linux-box.md).
+You pay for the electricity to keep the machine on. To set it up, follow [run stay-green on a Linux box](how-to-run-on-a-linux-box.md).
 
 ### 2. Cloudflare Workers
 
-If you have no box that stays on, the Worker in `worker/` runs the same logic on the Workers free plan. Signing up for Cloudflare [needs an email address and a password](https://developers.cloudflare.com/fundamentals/account/create-account/). The free plan's request, KV, and trigger limits leave a wide margin, but CPU time comes close to its limit:
+If you have no always-on machine at home, the Worker in `worker/` runs the same logic on the Cloudflare Workers free plan. Opening a Cloudflare account [requires an email address and a password](https://developers.cloudflare.com/fundamentals/account/create-account/). The free plan leaves a wide margin on requests, KV operations, and triggers, but CPU time per run comes close to its limit:
 
 | Limit on the free plan | stay-green's use |
 |---|---|
@@ -21,40 +21,38 @@ If you have no box that stays on, the Worker in `worker/` runs the same logic on
 | [100,000 KV reads and 1,000 KV writes a day](https://developers.cloudflare.com/workers/platform/pricing/) | 2 reads a run in your schedule, and 2 writes for each hourly renewal |
 | [5 Cron Triggers per account](https://developers.cloudflare.com/workers/platform/limits/) | 1 |
 
-Cloudflare stops a run that goes over the CPU limit, and the next run tries again 4 minutes later. After one stopped run, the session goes inactive for about 3 minutes.
+If a run exceeds the CPU limit, Cloudflare kills it and the next trigger retries 4 minutes later, leaving the presence session inactive for about 3 minutes in between. Because Cron Triggers use UTC, the Worker fires every 4 minutes around the clock and exits right away whenever the current time falls outside your schedule in your configured time zone.
 
-Cron Triggers run in UTC, so the Worker starts every 4 minutes all day, and the code skips each run outside your schedule in your time zone.
-
-The cost is that the renewals come from Cloudflare's data centers. Follow [run stay-green on Cloudflare Workers](how-to-run-on-cloudflare-workers.md).
+The drawback is that token renewals come from Cloudflare's data centers. To deploy it, follow [run stay-green on Cloudflare Workers](how-to-run-on-cloudflare-workers.md).
 
 ### 3. A Google Cloud e2-micro VM
 
-The [Google Cloud free tier](https://docs.cloud.google.com/free/docs/free-cloud-features) includes one e2-micro VM that does not get preempted, in `us-west1`, `us-central1`, or `us-east1`. It comes with 30 GB of standard disk and 1 GB of outbound traffic a month. stay-green sends a few small requests per run, so I expect it to stay far under 1 GB, but I have not measured it. The VM runs the Linux how-to unchanged.
+The [Google Cloud free tier](https://docs.cloud.google.com/free/docs/free-cloud-features) provides one non-preemptible e2-micro VM in `us-west1`, `us-central1`, or `us-east1`, paired with 30 GB of standard persistent disk and 1 GB of outbound traffic a month. Because stay-green sends a handful of tiny HTTPS requests per run, traffic over a month should stay well below 1 GB, though I have not measured it. The VM uses the Linux setup guide without changes.
 
-It needs a Google Cloud billing account, so you give Google a payment method. The renewals come from a Google data center in the United States.
+Opening the account requires a Google Cloud billing account with a payment method on file, and all token renewals come from a Google data center in the United States.
 
 ## A place that needs a port
 
-Google Apps Script runs JavaScript on a timer with a Google account, so a port of the Worker could run there. This repository has no such port, and Apps Script has two limits that make it a weaker fit:
+Google Apps Script executes JavaScript on a timer under a Google account, so the Worker could be ported to it. I have not written that port because two platform limits make Apps Script a worse fit than Cloudflare Workers:
 
-- A time-driven trigger [can run every 1, 5, 10, 15, or 30 minutes](https://developers.google.com/apps-script/reference/script/clock-trigger-builder), and nothing in between. Every 5 minutes equals the timeout after which Graph marks the session inactive, so the session would sometimes go inactive. Every minute works, but it makes 4 times as many calls.
-- Google says the start time of a time-driven trigger [might be slightly randomized](https://developers.google.com/apps-script/guides/triggers/installable).
+- A time-driven trigger [can run every 1, 5, 10, 15, or 30 minutes](https://developers.google.com/apps-script/reference/script/clock-trigger-builder), and nothing in between: a 5-minute interval matches Graph's inactivity timeout, so the session can go inactive between runs, while running every minute makes 4 times as many calls.
+- Google notes that a time-driven trigger's firing time [can vary by a small random offset](https://developers.google.com/apps-script/guides/triggers/installable).
 
 ## The places I ruled out
 
-GitHub Actions is free for public repositories, but it does not fit for these reasons:
+GitHub Actions is free on public repositories, but five constraints rule it out:
 
-- [The shortest schedule is every 5 minutes](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), which again equals the inactive timeout. The same page says scheduled runs can be delayed under high load, and that some queued jobs may be dropped.
-- In a private repository, with the default schedule, a run every 5 minutes for 9 hours is 108 runs a day. GitHub [rounds each job up to a whole minute](https://docs.github.com/en/billing/reference/actions-runner-pricing), so a month of 22 weekdays uses 2,376 minutes. [The free plan includes 2,000](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
-- In a public repository, the minutes are free, but any GitHub user can read the run logs.
-- The renewed refresh token has to go back into a repository secret after each renewal. The permissions of the workflow's own token do not include secrets, so you would store a personal access token with write access to secrets next to it.
-- [GitHub's terms for Actions](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features) say that on GitHub-hosted runners, Actions should not be used for "any other activity unrelated to the production, testing, deployment, or publication of the software project associated with the repository where GitHub Actions are used". A Teams status is not a software project.
+- [Scheduled workflows run at most every 5 minutes](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), which matches Graph's inactivity timeout, and GitHub warns that high load can delay or drop scheduled runs.
+- In a private repository on the default schedule, running every 5 minutes across 9 hours produces 108 runs a day. Because GitHub [rounds each job's billable runtime up to a full minute](https://docs.github.com/en/billing/reference/actions-runner-pricing), 22 weekdays consume 2,376 minutes a month against [the free plan's 2,000-minute allowance](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+- Making the repository public removes the minute cap but exposes the workflow run logs to every GitHub user.
+- Writing each new refresh token back to a repository secret requires a personal access token with secret-write permissions stored alongside it, because the workflow's own token cannot update secrets.
+- [GitHub's Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features) say that GitHub-hosted runners should not be used for "any other activity unrelated to the production, testing, deployment, or publication of the software project associated with the repository where GitHub Actions are used", and keeping a Teams dot green is not building software.
 
-These places fail on one limit each:
+Four other free options each hit a hard blocker:
 
-- Oracle Cloud Always Free [may reclaim an idle VM](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm). Oracle counts a VM as idle when, over 7 days, its 95th percentile CPU use and its network use stay under 20%. A VM that only runs stay-green stays far under both.
-- The AWS free plan [ends after six months or when the credits run out](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html), whichever comes first, and the account then closes.
-- An Android phone cannot schedule a periodic job more often than every 15 minutes, as `MIN_PERIOD_MILLIS` in [Android's `JobInfo` source](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/android-29/+/refs/heads/androidx-wear-release/android/app/job/JobInfo.java) shows. [Doze](https://developer.android.com/training/monitoring-device-state/doze-standby) also stops scheduled jobs and network access while the phone sleeps.
-- Vercel's Hobby plan runs a cron job [once a day](https://vercel.com/docs/cron-jobs/usage-and-pricing).
+- Oracle Cloud Always Free [can reclaim VMs it counts as idle](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), defined as keeping both 95th-percentile CPU usage and network usage below 20% over a 7-day window. A VM dedicated to stay-green sits far below both thresholds.
+- The AWS free tier [expires after six months or once its initial credits run out](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html), whichever happens first, and closes the free account at that point.
+- Android's `JobScheduler` enforces a minimum periodic interval of 15 minutes (`MIN_PERIOD_MILLIS` in [Android's `JobInfo` source](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/android-29/+/refs/heads/androidx-wear-release/android/app/job/JobInfo.java)), and [Doze mode](https://developer.android.com/training/monitoring-device-state/doze-standby) suspends background jobs and network access whenever the phone sleeps.
+- Vercel's Hobby plan restricts cron jobs to [one invocation a day](https://vercel.com/docs/cron-jobs/usage-and-pricing).
 
-I also looked at Azure Functions, Deno Deploy, Netlify, and cron-job.org. Azure Functions needs a [payment card](https://azure.microsoft.com/en-us/free/free-account-faq/) and a [storage account](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations), and cron-job.org only calls a URL, so it still needs a host and a place for the refresh token. Deno Deploy and Netlify may work, but I did not test them, so this page does not rank them.
+I also checked Azure Functions, Deno Deploy, Netlify, and cron-job.org. Azure Functions requires both a [payment card](https://azure.microsoft.com/en-us/free/free-account-faq/) and a [storage account](https://learn.microsoft.com/en-us/azure/azure-functions/storage-considerations), while cron-job.org sends HTTP requests to a URL and still needs a backend host and token store. Deno Deploy and Netlify might work, but I have not tested either one.

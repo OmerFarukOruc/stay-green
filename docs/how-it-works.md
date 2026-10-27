@@ -1,50 +1,50 @@
 # How stay-green keeps the status Available
 
-Teams does not keep one status for you. It keeps a presence session for each Teams client you have open, and Microsoft Graph lets an app keep its own session beside them. Teams shows the session with the highest precedence. stay-green owns one of those sessions and keeps it Available in your working hours, so the Teams clients can sit idle, locked, or closed.
+Teams tracks a separate presence session for each open Teams client, and Microsoft Graph lets an app keep one more beside them. Teams shows whichever session has the highest precedence. stay-green holds that app session and renews it as Available during your working hours, so your Teams clients can sit idle, locked, or closed.
 
 ## Teams shows the session with the highest precedence
 
-Microsoft documents the order in [Manage presence state using the Microsoft Graph API](https://learn.microsoft.com/en-us/graph/cloud-communications-manage-presence-state):
+Microsoft documents the precedence rules in [Manage presence state using the Microsoft Graph API](https://learn.microsoft.com/en-us/graph/cloud-communications-manage-presence-state):
 
-- A status you pick in Teams has precedence over every session.
-- Among sessions, Do not disturb has precedence over Busy, Busy over Available, and Available over Away.
+- A status you pick in Teams overrides every session.
+- Across sessions, Do not disturb outranks Busy, Busy outranks Available, and Available outranks Away.
 
-When your Teams client reports Away, the stay-green session still says Available, so Teams shows you Available. When you are in a meeting, Teams shows you Busy, and Busy has precedence over Available, so your colleagues still see that you are in a meeting. When you pick Do not disturb or Appear away in Teams, your choice has precedence over everything stay-green does.
+An idle Teams client reports Away, while the stay-green session still reports Available and keeps your dot green. Joining a meeting or a call marks your Teams client Busy, which outranks Available and lets your colleagues see that you are in a meeting. Picking Do not disturb or Appear away in Teams overrides stay-green and every other session.
 
-I picked [`setPresence`](https://learn.microsoft.com/en-us/graph/api/presence-setpresence?view=graph-rest-1.0) for that reason. Graph also has [`setUserPreferredPresence`](https://learn.microsoft.com/en-us/graph/api/presence-setuserpreferredpresence?view=graph-rest-1.0), which sets the status you pick in Teams. That call would hide your meetings, and it would overwrite the status you picked by hand.
+I built stay-green around [`setPresence`](https://learn.microsoft.com/en-us/graph/api/presence-setpresence?view=graph-rest-1.0) to preserve that hierarchy. Graph's other endpoint, [`setUserPreferredPresence`](https://learn.microsoft.com/en-us/graph/api/presence-setuserpreferredpresence?view=graph-rest-1.0), writes the user-selected status in Teams, which would mask your meetings and overwrite any status you picked by hand.
 
 ## An idle session fades in two steps
 
-A session does not stay Available forever. The same Microsoft page says that an Available session times out five minutes after the last call, and its activity changes to `AvailableInactive`. Five minutes later it changes to `Away`. The journal of the server I run stay-green on shows both steps, and in it Graph reported the availability of the first step as `AvailableIdle`. Two runs came 7 and 8 minutes after the run before them, and each saw the availability `AvailableIdle`. One run came after a 12-minute gap and saw `Away`.
+An Available session expires unless the app renews it. According to the same Microsoft page, an Available session times out five minutes after its last call and drops its activity to `AvailableInactive`, then drops to `Away` five minutes after that. My server's journal shows both transitions, with Graph reporting the first step's availability as `AvailableIdle`: two runs that arrived 7 and 8 minutes after the preceding run saw `AvailableIdle`, and one run after a 12-minute gap saw `Away`.
 
-So stay-green calls Graph every 4 minutes. That leaves one minute of margin, so a run that is up to a minute late still comes before the session goes inactive.
+Calling Graph every 4 minutes leaves a one-minute buffer before that first timeout, so a run that starts up to a minute late still lands before the session goes inactive.
 
-Each call also sets `expirationDuration` to 15 minutes. Graph ends the session that long after the last call. With 15 minutes, a few missed runs during the day only fade the session for a few minutes. At the end of a schedule that ends at 18:00, the last run is at 17:56. The session goes inactive at about 18:01 and Away at about 18:06, and Graph ends it at about 18:11.
+Each call sets `expirationDuration` to 15 minutes, which is when Graph closes the session if no further calls arrive. That 15-minute window means a couple of missed runs during the day let the status fade for a few minutes without dropping the session altogether. On a schedule that ends at 18:00, the final run fires at 17:56, the session turns inactive around 18:01, switches to Away around 18:06, and closes around 18:11.
 
-Teams reads presence by polling, so a change made through Graph can take a few minutes to show in the Teams clients. Microsoft notes this on the same page.
+Teams clients poll for presence, so a change made through Graph can take a few minutes to show in Teams. Microsoft notes this on the same page.
 
 ## The schedule decides when it runs
 
-stay-green starts every 4 minutes around the clock, and each run first checks your schedule. A run outside the schedule ends before it reads the refresh token or calls Microsoft. The schedule names days and time ranges in a time zone you choose, such as `Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00` in `Europe/Istanbul`. So a lunch break, a short Friday, or a daylight saving change needs no change to the timer or the cron. The Linux timer and the Cloudflare Worker read the same format, and [the reference](reference.md#schedule) defines it.
+The timer and the Worker trigger every 4 minutes around the clock, and each run checks your schedule first. Outside scheduled hours, the process exits before reading the refresh token or contacting Microsoft. You write the schedule as days and time ranges in an IANA time zone, such as `Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00` in `Europe/Istanbul`, so lunch breaks, early Fridays, and daylight saving transitions work without editing the systemd timer or the cron expression. Both the Linux script and the Cloudflare Worker parse the format defined in [the reference](reference.md#schedule).
 
 ## Out of office stops the calls
 
-Before each call, stay-green reads your presence. When Graph reports you out of office, stay-green skips the call and leaves your status alone. Graph [reports out of office](https://learn.microsoft.com/en-us/graph/api/resources/outofofficesettings?view=graph-rest-1.0) when the current time is inside an out-of-office window that you set in Outlook or Teams, or when a calendar event that shows as Out of office is in progress. So when either applies, stay-green makes no call, even inside your schedule.
+Each run inside your schedule reads your current presence before it calls `setPresence`. If Graph [reports out of office](https://learn.microsoft.com/en-us/graph/api/resources/outofofficesettings?view=graph-rest-1.0), stay-green skips the update and leaves your status untouched. Graph sets that flag during an out-of-office window configured in Outlook or Teams and during any calendar event marked Out of office.
 
 ## The sign-in uses Microsoft's own command-line app
 
-To call Graph for you, stay-green needs an access token with the `Presence.ReadWrite` permission. stay-green does not register an app of its own in your organization's Microsoft Entra ID. It signs in as an app that Microsoft already provides, Microsoft Graph Command Line Tools, with the ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`. Microsoft lists that ID among its [first-party apps](https://learn.microsoft.com/en-us/troubleshoot/azure/entra/entra-id/governance/verify-first-party-apps-sign-in).
+Calling Graph on your behalf requires an access token with the delegated `Presence.ReadWrite` permission. Rather than registering a custom application in your organization's Microsoft Entra ID, stay-green signs in as Microsoft's pre-registered Microsoft Graph Command Line Tools app, client ID `14d82eec-204b-4c2f-b7e8-296a70dab67e`, which Microsoft lists among its [first-party apps](https://learn.microsoft.com/en-us/troubleshoot/azure/entra/entra-id/governance/verify-first-party-apps-sign-in).
 
-That app suits stay-green for three reasons:
+Using that app solves three setup problems:
 
-- It needs no client secret.
-- It accepts a redirect to `http://localhost`, so `stay-green login` can receive the result of the sign-in on a port of your own computer. I found no Microsoft page that lists this app's redirect URIs. Microsoft [ignores the port](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url) when it matches a registered `http://localhost` redirect, and every `stay-green login` relies on that.
-- The [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference) marks the delegated `Presence.ReadWrite` permission as one that does not need admin consent. So you can consent to it yourself, unless your organization [turned user consent off](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-user-consent).
+- Public client flows work without a client secret.
+- The app accepts `http://localhost` redirects, so `stay-green login` can catch the sign-in redirect on a local port. While I found no Microsoft page listing the app's registered redirect URIs, Microsoft [ignores the port](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url) when matching a registered `http://localhost` URI, and `stay-green login` depends on that behavior.
+- Microsoft's [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference) marks delegated `Presence.ReadWrite` as not requiring admin consent, letting you grant it yourself unless your organization [turned user consent off](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-user-consent).
 
-`setPresence` needs a session ID, and Microsoft asks for the app's ID there. So the session that stay-green keeps belongs to Microsoft Graph Command Line Tools.
+Because `setPresence` requires the calling app's client ID as its session ID, the presence session that stay-green keeps belongs to Microsoft Graph Command Line Tools.
 
-You sign in once. The sign-in returns a refresh token. stay-green stores it and uses it to get a new access token about once an hour. Each renewal also returns a new refresh token, and stay-green keeps the newest one. A refresh token expires after [90 days without use](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes), so the renewals during your schedule keep it alive. If stay-green does not run for 90 days, for example during a long leave, the refresh token expires and you sign in again. [The risks](risks.md) explain what the stored refresh token can do and where the renewals show up.
+A single interactive sign-in returns a refresh token that stay-green saves to disk or Workers KV. About once an hour, stay-green exchanges that refresh token for a fresh access token and stores the new refresh token that comes back with it. Refresh tokens expire after [90 days without use](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes), so regular workday renewals keep the token alive. A gap of 90 days or more, such as a long leave, requires a new `stay-green login`. See [the risks](risks.md) for what a stored refresh token permits and where those renewals appear in audit logs.
 
 ## stay-green needs no device that stays awake
 
-The replies to the post in the README keep a Teams client active, so each needs a device that stays on and awake all day. stay-green does not. It needs one small program that runs every 4 minutes somewhere, and a stored refresh token. Your organization's sign-in logs show the renewals, and a stored refresh token is something an attacker could use. Whether that trade suits you depends on your employer, so read [the risks](risks.md) before you decide.
+Workarounds from the X thread in the README keep a Teams client awake, tying up a machine all day. stay-green replaces that open client with a small program that runs every 4 minutes and a stored refresh token. In exchange, your organization's sign-in logs record the token renewals, and an attacker who steals the refresh token can act as you. Read [the risks](risks.md) to weigh that trade against your employer's policies.

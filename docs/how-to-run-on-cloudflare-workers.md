@@ -1,42 +1,42 @@
 # Run stay-green on Cloudflare Workers
 
-This guide runs stay-green as a Cloudflare Worker on the Workers free plan, for when you have no computer that stays on. A Cron Trigger starts the Worker every 4 minutes, the Worker checks your schedule, and it keeps the refresh token in Workers KV.
+Deploy stay-green as a Cloudflare Worker on the Workers free plan when you have no computer that stays on during the day. A Cron Trigger starts the Worker every 4 minutes, the Worker checks your schedule, and Workers KV stores the refresh token.
 
 You need:
 
-- A Cloudflare account. The free plan is enough.
-- Node.js 22 or newer on your computer, for Wrangler, the Cloudflare command-line tool.
-- Python 3.9 or newer and a browser on your computer, to sign in.
-- A work or school Microsoft 365 account. Graph does not let an app set the presence of a personal Microsoft account.
+- A Cloudflare account on the free plan or higher.
+- Node.js 22 or newer on your computer to run Wrangler, Cloudflare's command-line tool.
+- Python 3.9 or newer and a browser on your computer for the initial sign-in.
+- A work or school Microsoft 365 account. Microsoft Graph does not allow an app to set the presence of a personal Microsoft account.
 
-The commands are for a Linux shell. Read [the risks](risks.md) before you start. A Worker renews from Cloudflare's data centers, and Microsoft's Identity Protection, its sign-in risk detection, can flag that.
+All commands below assume a Linux shell. Read [the risks](risks.md) before you start: a Worker renews tokens from Cloudflare's data centers, which Microsoft Entra Identity Protection can flag as a sign-in risk.
 
 ## Get the code
+
+Clone the repository and enter the `stay-green` folder, where all commands in this guide run:
 
 ```sh
 git clone https://github.com/OmerFarukOruc/stay-green
 cd stay-green
 ```
 
-Run the commands in this guide from the `stay-green` folder.
-
 ## Sign in on your computer
 
-The Worker cannot run the sign-in, because the sign-in sends its result to `http://localhost` on the computer that signs in. So you sign in on your computer and upload the refresh token.
+Because the sign-in flow redirects to `http://localhost` on the machine with the browser, the Worker cannot run it. Sign in on your computer first, then upload the resulting refresh token:
 
 ```sh
 python3 stay-green login
 ```
 
-Sign in with your work account. If Microsoft asks you to accept the permissions, accept them. The script stores the refresh token in `~/.local/state/stay-green/refresh-token`, or under `$XDG_STATE_HOME` if you set it, and prints `Stored the sign-in in ...`.
+Sign in with your work account and accept the permission prompt if Microsoft shows one. The script saves the refresh token to `~/.local/state/stay-green/refresh-token`, or under `$XDG_STATE_HOME` when set, and prints `Stored the sign-in in ...`.
 
-Check that the sign-in works:
+Verify the sign-in with `status`:
 
 ```sh
 python3 stay-green status
 ```
 
-The first line shows your availability and activity, such as `Available / Available`.
+The first line prints your current availability and activity, such as `Available / Available`.
 
 ## Set your schedule
 
@@ -47,56 +47,56 @@ Edit `vars` in `worker/wrangler.jsonc`:
 "TIME_ZONE": "America/New_York",
 ```
 
-`SCHEDULE` lists days and time ranges. A range ends before its end time. [The reference](reference.md#schedule) defines the format. `TIME_ZONE` is an IANA time zone name.
+`SCHEDULE` defines your working days and time ranges using the syntax in [the schedule reference](reference.md#schedule), and a range ends before its end time. `TIME_ZONE` takes an IANA time zone name.
 
-To check both values before you deploy, run `status` with them:
+Before deploying, test both settings on your computer with `status`:
 
 ```sh
 STAY_GREEN_SCHEDULE='Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00' \
 STAY_GREEN_TIME_ZONE=America/New_York python3 stay-green status
 ```
 
-The second line says whether now is inside the schedule. A mistake in either value makes `status` fail with a message that names the wrong part.
+The second line reports whether the current time falls inside the schedule, and any syntax error in either value makes `status` exit with a message naming the bad part.
 
 ## Deploy the Worker
 
-Log in to Cloudflare, then deploy:
+Authenticate Wrangler with your Cloudflare account and deploy the Worker:
 
 ```sh
 (cd worker && npx wrangler@4 login)
 (cd worker && npx wrangler@4 deploy)
 ```
 
-The first deploy creates a KV namespace named `stay-green-tokens` for the `TOKENS` binding. When you run it in a terminal, Wrangler also writes the namespace ID into `worker/wrangler.jsonc`. Later deploys reuse the namespace with or without that ID.
+On the first deploy, Wrangler creates a KV namespace named `stay-green-tokens` for the `TOKENS` binding and, in an interactive terminal, writes its namespace ID into `worker/wrangler.jsonc`. Later deploys reuse that namespace whether or not the ID stays in the file.
 
-A Cron Trigger needs a `workers.dev` subdomain on your account, even though this Worker has no URL. If the deploy fails with `You need a workers.dev subdomain`, open **Workers & Pages** in the Cloudflare dashboard once, which creates the subdomain, and deploy again.
+Cloudflare requires an active `workers.dev` subdomain on your account before it attaches a Cron Trigger, even though this Worker disables public URLs. If `wrangler deploy` fails with `You need a workers.dev subdomain`, open **Workers & Pages** in the Cloudflare dashboard once to create the subdomain, then run `deploy` again.
 
-Until you upload the refresh token in the next step, each run inside your schedule fails with `no refresh-token key in TOKENS`.
+Until you upload the refresh token in the next step, scheduled runs inside your working hours fail with `no refresh-token key in TOKENS`.
 
 ## Upload the refresh token
 
-Upload the refresh token. When the upload succeeds, the command deletes the copy on your computer:
+Upload the refresh token to Workers KV, and delete the local copy once the upload succeeds:
 
 ```sh
 (cd worker && npx wrangler@4 kv key put refresh-token --binding TOKENS --path "${XDG_STATE_HOME:-$HOME/.local/state}/stay-green/refresh-token" --remote) \
 	&& rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/stay-green"
 ```
 
-The `--remote` flag matters. Without it, Wrangler 4 writes to a local copy of the namespace, which the deployed Worker never reads.
+Keep the `--remote` flag on `kv key put`: without it, Wrangler 4 writes to a local development store that the deployed Worker cannot read.
 
 ## Watch the runs
 
-After the first deploy, the Cron Trigger can take up to [15 minutes](https://developers.cloudflare.com/workers/configuration/cron-triggers/) to start. Then, inside your schedule, stream the Worker's log:
+After the initial deploy, Cloudflare can take up to [15 minutes](https://developers.cloudflare.com/workers/configuration/cron-triggers/) to register the Cron Trigger. Once it is active, stream the Worker's live log during your scheduled hours:
 
 ```sh
 (cd worker && npx wrangler@4 tail)
 ```
 
-Every 4 minutes, a run logs a line such as `marked Available; the status was Away`. Outside your schedule, each run still appears in the log, but without a stay-green line. On the free plan, [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) also keeps these logs for 3 days. To read them in the Cloudflare dashboard, open the Worker and select **Observability**.
+Every 4 minutes inside your schedule, the Worker logs a line such as `marked Available; the status was Away`. Outside your schedule, the cron invocation still appears in the stream without a stay-green message. On the free plan, [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) retains these entries for 3 days under **Observability** on the Worker's dashboard page.
 
 ## Sign in again
 
-When a run fails with `the sign-in was rejected earlier`, or when you want another account, sign in again and upload the new refresh token. Do it outside your schedule, and at least a minute before it starts. A run that is in progress during the upload, or that reads KV before the upload reaches its Cloudflare location, can write its own renewed refresh token over yours.
+To recover from `the sign-in was rejected earlier` or switch accounts, run a fresh sign-in and upload the new refresh token. Run both commands outside your scheduled hours and at least a minute before the next window starts, so an in-flight Worker run or a lagging KV read cannot overwrite your uploaded token with a renewed copy of the old one:
 
 ```sh
 python3 stay-green login
@@ -104,11 +104,11 @@ python3 stay-green login
 	&& rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/stay-green"
 ```
 
-The Worker detects that the refresh token changed, so it drops the old access token and the old rejection by itself.
+Because the Worker hashes the current refresh token in its KV cache, uploading a new token invalidates the cached access token and any recorded rejection on its own.
 
 ## Update the Worker
 
-Pull the repository and deploy again. Your edits to `vars`, and the namespace `id` if Wrangler wrote one, make `worker/wrangler.jsonc` a changed file. `git stash` sets them aside during the pull, and `git stash pop` puts them back:
+Pull the latest commits and redeploy. Your schedule edits in `vars`, and any namespace `id` that Wrangler wrote, make `worker/wrangler.jsonc` a changed file. `git stash` sets them aside before the pull, and `git stash pop` puts them back afterward:
 
 ```sh
 git stash
@@ -117,15 +117,15 @@ git stash pop
 (cd worker && npx wrangler@4 deploy)
 ```
 
-If `git stash pop` reports a conflict in `worker/wrangler.jsonc`, keep your `vars` and any `id` in the file, then deploy.
+If `git stash pop` reports a merge conflict in `worker/wrangler.jsonc`, keep your `vars` block and any namespace `id`, then run `deploy`.
 
 ## Remove the Worker
 
-Delete the Worker, then the namespace that holds the refresh token:
+Delete the deployed Worker and the KV namespace that holds the refresh token:
 
 ```sh
 (cd worker && npx wrangler@4 delete)
 (cd worker && npx wrangler@4 kv namespace delete stay-green-tokens)
 ```
 
-If Wrangler wrote an `id` under `kv_namespaces` in `worker/wrangler.jsonc`, delete that `id`, so that a later deploy creates a new namespace. The deleted refresh token stays valid at Microsoft until it expires. To make every copy useless, ask your admin to revoke your refresh tokens, as [the risks](risks.md#a-stolen-refresh-token-acts-as-you) describe.
+If Wrangler wrote an `id` under `kv_namespaces` in `worker/wrangler.jsonc`, remove that `id` line so a future deploy creates a new namespace. Deleting the KV namespace does not invalidate the refresh token at Microsoft before its expiration date. To invalidate every copy at once, ask your admin to revoke your refresh tokens, as [the risks](risks.md#a-stolen-refresh-token-acts-as-you) describe.

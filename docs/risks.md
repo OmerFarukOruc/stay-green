@@ -1,54 +1,54 @@
 # The risks of keeping your status Available
 
-stay-green makes Teams show you Available when you may not be at your desk. That is the point of it, and it is also the biggest risk. This page covers that risk first, then what your organization can see, what it can block, and what the stored refresh token can do if someone else gets it.
+stay-green makes Teams show you Available when you may not be at your desk. Beyond the workplace policy risk, your organization can spot the calls in its logs or block them with access policies, and someone who steals the stored refresh token can act as you.
 
 ## Your employer may treat it as misconduct
 
-A green dot tells your colleagues that you are at your computer now. Some employers treat a faked status like any other faked work record.
+A green dot tells your colleagues that you are at your computer. Some employers treat a faked status the same way they treat any other falsified work record.
 
-In May 2024, Wells Fargo fired more than a dozen employees in its wealth and investment management unit. Its FINRA filings said they were "discharged after review of allegations involving simulation of keyboard activity creating impression of active work". [The Register](https://www.theregister.com/on-prem/2024/06/13/wells-fargo-fires-employees-for-faking-keyboard-activity/771827) and [Banking Dive](https://www.bankingdive.com/news/wells-fires-employees-faking-productivity-finra/719033/) reported the filings in June 2024. The filings do not say which tools those employees used. The allegation was a faked sign of activity, and stay-green also produces a faked sign of activity.
+In May 2024, Wells Fargo fired more than a dozen employees in its wealth and investment management unit. Its FINRA filings, reported by [The Register](https://www.theregister.com/on-prem/2024/06/13/wells-fargo-fires-employees-for-faking-keyboard-activity/771827) and [Banking Dive](https://www.bankingdive.com/news/wells-fires-employees-faking-productivity-finra/719033/) in June 2024, stated that they were "discharged after review of allegations involving simulation of keyboard activity creating impression of active work". While the filings do not name the tools those employees used, the allegation centered on faking a sign of activity, which is what stay-green does.
 
-Read your employer's policy before you run it. If the policy says that your status must reflect what you are doing, stay-green breaks it.
+Check your employer's policy before you run it. If the policy requires your status to reflect your real activity, stay-green violates it.
 
 ## Your organization can find it
 
-An admin who looks can find stay-green in these places:
+An admin who checks Entra logs can find stay-green in two places:
 
-- Sign-in logs. Each renewal is a non-interactive sign-in by the app "Microsoft Graph Command Line Tools", about once an hour in your schedule. [Microsoft's page on non-interactive sign-ins](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-noninteractive-sign-ins) lists a refresh token renewal as one, and the log entry holds the app, the user, and the IP address.
-- Graph activity logs. If your organization has Microsoft Entra ID P1 or P2 and an admin turned these logs on, they record every Graph request. That includes the `setPresence` call every 4 minutes, with the app ID and the IP address. [Microsoft Graph activity logs](https://learn.microsoft.com/en-us/graph/microsoft-graph-activity-logs-overview) lists the fields.
+- Sign-in logs record each token renewal as a non-interactive sign-in by "Microsoft Graph Command Line Tools", about once an hour during your schedule. [Microsoft's page on non-interactive sign-ins](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/concept-noninteractive-sign-ins) includes refresh token renewals and notes that each entry logs the app, the user, and the IP address.
+- Graph activity logs, when enabled on a Microsoft Entra ID P1 or P2 tenant, record each Graph request, including the `setPresence` call every 4 minutes with its app ID and IP address. [Microsoft Graph activity logs](https://learn.microsoft.com/en-us/graph/microsoft-graph-activity-logs-overview) lists the captured fields.
 
 ## Identity Protection may flag the renewals
 
-With Microsoft Entra ID P2, [Identity Protection](https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks) looks for sign-ins that do not fit your usual pattern. Two of its detections fit stay-green when it runs in a data center:
+On tenants with Microsoft Entra ID P2, [Identity Protection](https://learn.microsoft.com/en-us/entra/id-protection/concept-identity-protection-risks) watches for sign-ins outside your normal pattern. Running stay-green in a data center can trigger two of its detections:
 
-- "Unfamiliar sign-in properties" compares the IP address, the network, and the location with your history. Microsoft says that when it fires on a non-interactive sign-in, "it deserves increased scrutiny due to the risk of token replay attacks".
-- "Anomalous token" covers refresh tokens "played from an unfamiliar location".
+- "Unfamiliar sign-in properties" compares the IP address, network, and location against your sign-in history. Microsoft notes that when this detection fires on a non-interactive sign-in, "it deserves increased scrutiny due to the risk of token replay attacks".
+- "Anomalous token" flags refresh tokens "played from an unfamiliar location".
 
-You sign in on your own computer, and then the renewals come from a Cloudflare or Google data center. A stolen refresh token makes the same pattern. A risk policy can then block the renewals or make you change your password, and the security team may get an alert. A Linux box in your own home renews from your home IP address, which makes this pattern less likely.
+Signing in on your own computer and renewing from a Cloudflare or Google data center matches the traffic pattern of a stolen refresh token. A risk policy can respond by blocking the renewals, forcing a password reset, or alerting your security team. Running stay-green on a Linux box at home keeps the renewals on your home IP address.
 
 ## Your organization can block it
 
-An admin can stop stay-green in several ways:
+An admin can stop stay-green with any of four controls:
 
-- A [Conditional Access](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-conditional-access-grant) policy that needs a compliant device or a device joined to the organization. A server or a Worker is neither.
-- A Conditional Access policy that allows only some [network locations](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network). Microsoft checks the location when a refresh token is renewed, by default once an hour.
-- "Assignment required" on the Microsoft Graph Command Line Tools enterprise app, or sign-in turned off for that app. [Microsoft describes both settings](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users).
-- [User consent turned off](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-user-consent) for the organization. Then you cannot consent to `Presence.ReadWrite` when you first sign in, and an admin has to.
+- Require a compliant device, or a device joined to your organization, in a [Conditional Access](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-conditional-access-grant) policy, which rules out a Linux server or a Cloudflare Worker.
+- Restrict allowed [network locations](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network) in Conditional Access, which Microsoft re-evaluates at each refresh token renewal, by default once an hour.
+- Turn on "Assignment required" or disable sign-in on the Microsoft Graph Command Line Tools enterprise app, as [Microsoft describes](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users).
+- [Turn off user consent](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/configure-user-consent) for the tenant so that an admin must grant `Presence.ReadWrite` before you can sign in.
 
-When one of them applies, the renewal fails, and each run fails until the block ends. If Microsoft refuses the renewal with one of the five error codes in [the reference](reference.md#files), stay-green also stops asking until you sign in again.
+Any of those controls causes token renewal to fail on each run until the restriction ends. If Microsoft rejects the renewal with one of the five error codes in [the reference](reference.md#files), stay-green stops retrying until you sign in again.
 
 ## A stolen refresh token acts as you
 
-Two Microsoft pages give the facts that matter here, [Refresh tokens](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens) and [Configurable token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes):
+Microsoft's [Refresh tokens](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens) and [Configurable token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes) pages document three properties that matter here:
 
-- A refresh token is bound to you and to the app, and not to one resource. Whoever holds it can get an access token for anything you consented to for Microsoft Graph Command Line Tools. If you ever consented to `Mail.Read` for this app, the refresh token can read your mail too.
-- A refresh token expires after 90 days without use. Each renewal returns a new one, so a refresh token that stay-green keeps renewing does not expire.
-- A renewal does not revoke the old refresh token. An old copy that someone took stays valid until it expires.
+- A refresh token is bound to you and the client app rather than to a single resource, so its holder can get access tokens for any permission you have granted to Microsoft Graph Command Line Tools. If you ever granted `Mail.Read` to that app, the same token can read your mail.
+- A refresh token expires after 90 days without use, and each renewal returns a replacement token, so a token that stay-green keeps renewing does not expire.
+- Renewing a refresh token does not invalidate the previous one, which means a stolen copy remains valid until its own lifetime runs out.
 
-So keep the refresh token where you keep passwords. On a Linux box, stay-green writes it to a file with mode 600, so other users cannot read it. On Cloudflare, it sits in a Workers KV namespace that anyone with access to your Cloudflare account can read, so protect that account with a strong password and two-factor authentication.
+Treat the refresh token like a password. On a Linux box, stay-green writes the token file with mode 600 so other local users cannot read it. On Cloudflare, the token sits in a Workers KV namespace readable by any user with access to your Cloudflare account, so protect that account with a strong password and two-factor authentication.
 
-If you think someone copied the refresh token, ask your admin to revoke your refresh tokens. A password change may not be enough. The refresh token page shows that a password change revokes the refresh token only when you signed in with a password, and not after a sign-in without one, such as with a passkey. The admin revokes all of your refresh tokens with **Revoke sessions** on your user in the Microsoft Entra admin center, as [Revoke user access](https://learn.microsoft.com/en-us/entra/identity/users/users-revoke-access) describes. After that, stay-green fails until you sign in again.
+If you suspect someone copied the refresh token, ask your admin to revoke your refresh tokens rather than relying on a password change. As Microsoft's refresh token page notes, changing your password revokes refresh tokens issued after a password sign-in, not those issued after a passwordless sign-in such as a passkey. Your admin can invalidate all of your refresh tokens with **Revoke sessions** on your user account in the Microsoft Entra admin center, as [Revoke user access](https://learn.microsoft.com/en-us/entra/identity/users/users-revoke-access) describes. Once revoked, stay-green fails until you sign in again.
 
 ## Free hosts can stop it
 
-A host can stop your jobs or your account when its terms forbid the use. GitHub's terms say that on GitHub-hosted runners, Actions should not be used for activity unrelated to the repository's software project. [Where to run it for free](where-to-run-it-for-free.md) rules out GitHub Actions for this reason among others.
+A hosting provider can suspend your jobs or close your account if your workload breaks its terms of service. GitHub's terms state that on GitHub-hosted runners, Actions should not be used for activity unrelated to the repository's software project, which is one reason [where to run it for free](where-to-run-it-for-free.md) rules out GitHub Actions.
