@@ -1,0 +1,48 @@
+{
+	"_about": "Response shapes of Microsoft's endpoints, copied from Microsoft's documentation. Both fakes of Microsoft read this file. Values are examples; only the field names and nesting matter to stay-green.",
+	"tokenSuccess": {
+		"_source": "https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#successful-response (Successful response, token response)",
+		"token_type": "Bearer",
+		"expires_in": 3599,
+		"scope": "https://graph.microsoft.com/Presence.ReadWrite",
+		"access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik5HVEZ2ZEstZnl0aEV1Q...",
+		"refresh_token": "AwABAAAAvPM1KaPlrEqdFSBzjqfTGAMxZGUTdM0t4B4..."
+	},
+	"tokenError": {
+		"_source": "https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow (Error response of the token endpoint)",
+		"error": "invalid_scope",
+		"error_description": "AADSTS70011: The provided value for the input parameter 'scope' is not valid. The scope https://foo.microsoft.com/mail.read is not valid.\r\nTrace ID: 0000aaaa-11bb-cccc-dd22-eeeeee333333\r\nCorrelation ID: aaaa0000-bb11-2222-33cc-444444dddddd\r\nTimestamp: 2016-01-09 02:02:12Z",
+		"error_codes": [70011],
+		"timestamp": "2016-01-09 02:02:12Z",
+		"trace_id": "0000aaaa-11bb-cccc-dd22-eeeeee333333",
+		"correlation_id": "aaaa0000-bb11-2222-33cc-444444dddddd"
+	},
+	"presence": {
+		"_source": "https://learn.microsoft.com/en-us/graph/api/presence-get?view=graph-rest-1.0 (Example 1, response)",
+		"id": "fa8bf3dc-eca7-46b7-bad1-db199b62afc3",
+		"availability": "Available",
+		"activity": "Available",
+		"outOfOfficeSettings": {
+			"message": null,
+			"isOutOfOffice": false
+		},
+		"sequenceNumber": "A0129311063",
+		"workLocation": {
+			"workLocationType": "office",
+			"source": "automatic",
+			"placeId": "eb706f15-137e-4722-b4d1-b601481d9251"
+		}
+	},
+	"graphError": {
+		"_source": "https://learn.microsoft.com/en-us/graph/errors (JSON error body)",
+		"error": {
+			"code": "InvalidAuthenticationToken",
+			"message": "Access token has expired or is not yet valid.",
+			"innerError": {
+				"code": "InvalidAuthenticationToken",
+				"request-id": "8d3c1b6e-0f5a-4c43-9a43-9d1c2b7f1e55",
+				"date": "2026-10-27T10:00:00"
+			}
+		}
+	}
+}

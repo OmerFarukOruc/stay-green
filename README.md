@@ -68,6 +68,10 @@ You need a work or school Microsoft 365 account and a computer with a browser an
 
 See [where to run it for free](docs/where-to-run-it-for-free.md) for how those two compare with GitHub Actions, Google Apps Script, Oracle Cloud, AWS, an Android phone, and Vercel. See [the reference](docs/reference.md) for the CLI commands, schedule syntax, state files, settings, log lines, and error messages.
 
+## Tests
+
+The tests run offline. I fake Microsoft's sign-in and Graph on localhost, so they need no account. Run the script's tests with `python3 -m unittest discover -s tests -v` and the Worker's tests with `node --test tests/*.test.mjs` on Node 22. Both read `tests/schedule-cases.json`, so the script and the Worker keep the same schedule rules. GitHub Actions runs both on every push to `main` and on every pull request.
+
 ## License
 
 [MIT](LICENSE)
