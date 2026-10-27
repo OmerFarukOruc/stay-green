@@ -1,10 +1,15 @@
 """Contracts of `stay-green run`: when it calls setPresence, and how it keeps and renews the tokens. The real script
 runs against a local fake of Microsoft's endpoints, so every Graph and token request crosses real HTTP."""
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
-from harness import (DROP, SET_PRESENCE_BODY, SHAPES, CLIENT_ID, Reply, ScriptCase, graph_error, html, mode_of,
+from harness import (DROP, ROOT, SET_PRESENCE_BODY, SHAPES, CLIENT_ID, Reply, ScriptCase, graph_error, html, mode_of,
                      presence, token_error, token_ok)
 
 PRESENCE_ID = SHAPES["presence"]["id"]
@@ -184,6 +189,23 @@ class TokenTest(ScriptCase):
                 self.assertTrue(str(result).startswith(f"stay-green: {status} {code}"), result)
                 self.assertEqual(self.files(), ["access-token", "refresh-token"])
                 self.assertEqual(self.fake.token_requests, [])
+
+
+class CommandTest(unittest.TestCase):
+    # The other tests call main() in the test process. This one starts the script as a command, so its __main__ block
+    # runs, and an open umask such as 022 must still leave the files it creates private (docs/reference.md, Files).
+    def test_the_command_creates_its_files_private_under_an_open_umask(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "stay-green"
+            state.mkdir(mode=0o700)
+            env = {**os.environ, "XDG_STATE_HOME": tmp, "STAY_GREEN_SCHEDULE": "Mon-Sun 00:00-24:00"}
+            env.pop("STAY_GREEN_TIME_ZONE", None)
+            # No sign-in is stored, so the run stops after it takes the lock and before any request.
+            result = subprocess.run([sys.executable, str(ROOT / "stay-green"), "run"], env=env, umask=0o022,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no sign-in", result.stderr)
+            self.assertEqual(mode_of(state / "lock"), 0o600)
 
 
 if __name__ == "__main__":

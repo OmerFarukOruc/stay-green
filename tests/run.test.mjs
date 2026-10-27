@@ -57,6 +57,18 @@ test("a schedule that ends while the run waits on Microsoft makes no setPresence
 	assert.equal(fake.requests[0].path, "/v1.0/me/presence");
 });
 
+test("one isolate that lives across a daylight saving change reads each run in the zone's offset of that day", async (t) => {
+	// The Workers runtime keeps an isolate, and what it caches, across many runs. New York leaves EDT on 2026-11-01.
+	const kv = { "refresh-token": "RT-OLD", cache: cacheEntry("RT-OLD", "AT-OLD", Date.parse("2026-11-03T00:00:00Z")) };
+	const { fake, run, setClock } = await setup(t, { schedule: "Mon-Fri 09:00-17:00", zone: "America/New_York", now: "2026-10-30T13:30:00Z", kv });
+	await run(); // Fri 09:30 EDT, inside
+	assert.equal(fake.to("/me/presence").length, 1);
+	fake.requests.length = 0;
+	setClock("2026-11-02T13:30:00Z"); // Mon 08:30 EST, outside
+	await run();
+	assert.deepEqual(fake.requests, []);
+});
+
 test("outside the schedule the run contacts nobody and does not read the token store", async (t) => {
 	const { fake, kv, run } = await setup(t, { schedule: "Mon-Fri 09:00-18:00", now: "2026-10-26T18:00:00Z", kv: signedIn() });
 	await run();

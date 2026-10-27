@@ -70,7 +70,7 @@ See [where to run it for free](docs/where-to-run-it-for-free.md) for how those t
 
 ## Tests
 
-The tests run offline. I fake Microsoft's sign-in and Graph on localhost, so they need no account. Run the script's tests with `python3 -m unittest discover -s tests -v` and the Worker's tests with `node --test tests/*.test.mjs` on Node 22. Both read `tests/schedule-cases.json`, so the script and the Worker keep the same schedule rules. GitHub Actions runs both on every push to `main` and on every pull request.
+The tests run offline. I fake Microsoft's sign-in and Graph on localhost, so they need no account. Run the script's tests with `python3 -m unittest discover -s tests -v` and the Worker's tests with `node --test tests/*.test.mjs` on Node 22. Both read `tests/schedule-cases.json`, so the script and the Worker keep the same schedule rules. GitHub Actions runs both on every push to `main` and on every pull request. The Worker's tests run its code under Node with an in-memory stand-in for Workers KV, so they do not cover differences in the Workers runtime itself. The 8 runs on Cloudflare described above are the check of the runtime.
 
 ## License
 

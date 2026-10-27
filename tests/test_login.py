@@ -62,6 +62,18 @@ class RemoteStoreTest(LoginCase):
         self.assertEqual(sorted(p.name for p in self.remote.iterdir()), ["lock", "refresh-token"])
 
 
+class LocalStoreTest(LoginCase):
+    def test_a_local_sign_in_into_an_open_folder_leaves_a_private_folder_and_file(self):
+        # docs/reference.md (Files): the folder has mode 700 and each file mode 600.
+        self.state.chmod(0o755)
+        self.fake.token = lambda request: token_ok(access="AT-B", refresh=NEW_TOKEN)
+        code, _ = self.cli("login")
+        self.assertIsNone(code)
+        self.assertEqual(self.read("refresh-token"), NEW_TOKEN)
+        self.assertEqual(mode_of(self.state), 0o700)
+        self.assertEqual(mode_of(self.state / "refresh-token"), 0o600)
+
+
 class LoginDuringRenewalTest(LoginCase):
     def test_a_sign_in_that_starts_while_a_run_renews_account_a_ends_with_account_b_stored(self):
         self.write("refresh-token", "RT-A1")
