@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import http.client
 import http.server
@@ -208,60 +209,96 @@ def login(host: str | None) -> None:
     if host is None:
         folder = state_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        write_private(folder / "refresh-token", tokens["refresh_token"])
-        for name in ("access-token", "renewal-failed"):
-            (folder / name).unlink(missing_ok=True)
+        folder.chmod(0o700)
+        with locked(folder):
+            # Dropped first, so a sign-in that stops halfway leaves the old refresh token without stale state.
+            for name in ("access-token", "renewal-failed"):
+                (folder / name).unlink(missing_ok=True)
+            write_private(folder / "refresh-token", tokens["refresh_token"])
         print(f"Stored the sign-in in {folder}. Test it with: {shlex.quote(os.path.abspath(sys.argv[0]))} status")
         return
-    remote = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && cd "$d"'
-              " && cat > refresh-token && rm -f access-token renewal-failed")
-    # sh runs the command, whatever the login shell on HOST is.
+    # sh runs the command, whatever the login shell on HOST is. read fails when the connection drops before the
+    # line break that ends the token, so a cut token never replaces the stored one. The new file replaces the old
+    # one in one rename, under the same lock that run and status take.
+    remote = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && chmod 700 "$d"'
+              ' && IFS= read -r token && [ -n "$token" ] && exec 9>>"$d/lock" && flock 9'
+              ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && rm -f "$d/access-token" "$d/renewal-failed"'
+              ' && { printf "%s\\n" "$token" > "$t" && sync && mv -f "$t" "$d/refresh-token"'
+              ' || { rm -f "$t"; exit 1; }; }')
     stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(remote)],
-                            input=tokens["refresh_token"], text=True, check=False)
+                            input=tokens["refresh_token"] + "\n", text=True, check=False)
     if stored.returncode != 0:
         raise SystemExit(f"stay-green: could not store the sign-in on {host}")
     print(f"Stored the sign-in on {host}. Test it there with the status command of stay-green.")
 
 
+@contextlib.contextmanager
+def locked(folder: Path):
+    # A renewal replaces both stored tokens, and a sign-in replaces the refresh token, so they take turns. Without
+    # the lock, a run that renews during a sign-in writes the old account's tokens over the new sign-in.
+    # fcntl exists only on Unix. login HOST never takes this lock, so it also runs on Windows.
+    import fcntl
+
+    try:
+        file = open(folder / "lock", "a")  # noqa: SIM115, the with below closes it
+    except OSError as error:
+        raise SystemExit(f"stay-green: cannot open {folder / 'lock'}: {error.strerror}") from None
+    with file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        yield
+
+
 def write_private(path: Path, text: str) -> None:
-    # mkstemp makes a private file with a unique name, so two runs that renew at once do not mix their writes.
+    # mkstemp makes a private file with a unique name. fsync puts the new content on disk before the rename
+    # replaces the old file, so a power loss leaves one of the two whole.
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    with os.fdopen(fd, "w") as file:
-        file.write(text)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def access_token(state: Path) -> str:
-    cached = state / "access-token"
-    try:
-        entry = json.loads(cached.read_text())
-        # Renew 5 minutes early, so a token never expires between this check and the Graph calls.
-        if entry["expires"] > time.time() + 300:
-            return entry["token"]
-    except (OSError, ValueError, KeyError, TypeError):
-        pass  # No cached access token, or a damaged one: renew below.
-    # Each renewal is a sign-in in your organization's logs, so a rejected sign-in is not retried every run.
-    failed = state / "renewal-failed"
-    if failed.exists():
-        raise SystemExit(f"stay-green: the sign-in was rejected earlier ({failed.read_text().strip()}); sign in again")
-    refresh = state / "refresh-token"
-    if not refresh.exists():
-        raise SystemExit(f"stay-green: no sign-in in {refresh}; sign in with: stay-green login")
-    try:
-        tokens = request(f"{AUTHORITY}/token", form={
-            "client_id": CLIENT_ID,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh.read_text().strip(),
-            "scope": SCOPE,
-        })
-    except RequestError as error:
-        if error.code in SIGN_IN_AGAIN:
-            failed.write_text(f"{error}\n")
-        raise
-    # Each renewal returns a new refresh token. A refresh token expires after 90 days without use.
-    write_private(refresh, tokens["refresh_token"])
-    write_private(cached, json.dumps({"token": tokens["access_token"], "expires": time.time() + tokens["expires_in"]}))
-    return tokens["access_token"]
+    if not state.is_dir():
+        raise SystemExit(f"stay-green: no sign-in in {state / 'refresh-token'}; sign in with: stay-green login")
+    with locked(state):
+        cached = state / "access-token"
+        try:
+            entry = json.loads(cached.read_text())
+            # Renew 5 minutes early, so a token never expires between this check and the Graph calls.
+            if entry["expires"] > time.time() + 300:
+                return entry["token"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # No cached access token, or a damaged one: renew below.
+        # Each renewal is a sign-in in your organization's logs, so a rejected sign-in is not retried every run.
+        failed = state / "renewal-failed"
+        if failed.exists():
+            reason = failed.read_text().strip()
+            raise SystemExit(f"stay-green: the sign-in was rejected earlier ({reason}); sign in again")
+        refresh = state / "refresh-token"
+        if not refresh.exists():
+            raise SystemExit(f"stay-green: no sign-in in {refresh}; sign in with: stay-green login")
+        try:
+            tokens = request(f"{AUTHORITY}/token", form={
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh.read_text().strip(),
+                "scope": SCOPE,
+            })
+        except RequestError as error:
+            if error.code in SIGN_IN_AGAIN:
+                failed.write_text(f"{error}\n")
+            raise
+        # Each renewal returns a new refresh token. A refresh token expires after 90 days without use.
+        write_private(refresh, tokens["refresh_token"])
+        expires = time.time() + tokens["expires_in"]
+        write_private(cached, json.dumps({"token": tokens["access_token"], "expires": expires}))
+        return tokens["access_token"]
 
 
 def out_of_office(presence: dict) -> bool:
@@ -294,6 +331,10 @@ def run() -> None:
     presence = graph("/me/presence")
     if out_of_office(presence):
         print(f"out of office; left the status at {presence.get('availability')}")
+        return
+    # A run that waited on Microsoft past the end of the schedule must not stretch it.
+    if not scheduled():
+        print(f"the schedule ended during this run; left the status at {presence.get('availability')}")
         return
     graph(f"/users/{presence['id']}/presence/setPresence", payload={
         "sessionId": CLIENT_ID,
