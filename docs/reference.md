@@ -7,8 +7,8 @@
 | Command | Effect |
 |---|---|
 | `stay-green login` | Opens the Microsoft sign-in in the browser and waits up to 5 minutes for the redirect to `http://localhost:<port>`. Stores the refresh token in the state folder on this computer, deletes `access-token` and `renewal-failed` there, and prints `Stored the sign-in in <folder>. Test it with: <path of the script> status`. |
-| `stay-green login HOST` | Runs the same sign-in, then stores the refresh token in the state folder on `HOST` through `ssh -- HOST sh -c '...'`, deletes `access-token` and `renewal-failed` there, and prints `Stored the sign-in on HOST. Test it there with the status command of stay-green.` |
-| `stay-green run` | Ends at once when now is outside the schedule. Otherwise reads your presence. When Graph reports you out of office, prints that and stops. Otherwise marks the stay-green presence session Available for 15 minutes. |
+| `stay-green login HOST` | Runs the same sign-in, then sends the refresh token and a line break to `ssh -- HOST sh -c '...'`. On `HOST`, the command stores the token only when the whole line arrived: it writes a private temporary file and renames it over `refresh-token` while it holds `lock` with `flock`, then deletes `access-token` and `renewal-failed`. Prints `Stored the sign-in on HOST. Test it there with the status command of stay-green.` `HOST` needs `flock` and `mktemp`, which util-linux and coreutils provide. |
+| `stay-green run` | Ends at once when now is outside the schedule. Otherwise reads your presence. When Graph reports you out of office, prints that and stops. When the schedule ended while the run waited for Microsoft, prints that and stops. Otherwise marks the stay-green presence session Available for 15 minutes. |
 | `stay-green status` | Prints `<availability> / <activity>`, with `, out of office` added when Graph reports it. Then prints `now is inside the schedule` or `now is outside the schedule`. |
 
 Exit codes:
@@ -53,16 +53,17 @@ Examples:
 | `Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00` | A lunch break Monday to Thursday, and a short Friday. |
 | `Sun-Thu 08:00-17:00` | A Sunday to Thursday week. |
 
-Each run evaluates the schedule against the current wall-clock time in the configured time zone, so daylight saving transitions need no schedule changes. The Worker re-evaluates the schedule right before calling `setPresence`.
+Each run evaluates the schedule against the current wall-clock time in the configured time zone, so daylight saving transitions need no schedule changes. The script and the Worker both check the schedule again right before they call `setPresence`.
 
 ## Files
 
-The script stores state in `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green/` when `XDG_STATE_HOME` is unset, creating the directory with mode 700 and each file with mode 600.
+The script stores state in `$XDG_STATE_HOME/stay-green/`, or `~/.local/state/stay-green/` when `XDG_STATE_HOME` is unset, creating the directory with mode 700 and each file with mode 600. `login` also sets an existing directory to mode 700.
 
 | File | Content |
 |---|---|
 | `refresh-token` | The refresh token, as text. Each renewal replaces it. |
 | `access-token` | JSON with `token`, the access token, and `expires`, its expiry as a Unix time in seconds. The script uses it until 5 minutes before `expires`. A missing or damaged file means a renewal. |
+| `lock` | Empty. `login`, `run`, and `status` hold it with `flock` while they read or replace the stored tokens, so a renewal that is in progress cannot write the old tokens over a new sign-in. |
 | `.image-checked` | Written only by `systemd/stay-green-container`. Its modification time is the time of the last image check. |
 | `renewal-failed` | The error of a renewal that the sign-in service refused. While this file exists and the access token has expired, each run fails without contacting Microsoft. `login` deletes it. |
 
@@ -132,7 +133,7 @@ Each successful run inside the schedule logs one of three lines:
 |---|---|
 | `marked Available; the status was <availability>` | stay-green called `setPresence`. The availability is the one from before the call. |
 | `out of office; left the status at <availability>` | Graph reported you out of office, so stay-green made no call. |
-| `the schedule ended during this run; left the status at <availability>` | Worker only. The run started inside the schedule and reached `setPresence` after it ended. |
+| `the schedule ended during this run; left the status at <availability>` | The run started inside the schedule and reached `setPresence` after it ended, so stay-green made no call. |
 
 Runs outside the schedule emit no stay-green log line.
 
@@ -157,4 +158,4 @@ The Python script writes expected errors to standard error as a single line pref
 | `no sign-in within 5 minutes` | `login` got no redirect from the browser in time. | Another `login`. |
 | `sign-in failed: <error>: <description>` | The Microsoft sign-in page returned an error, such as a refused consent. | The description names the cause. An admin may have to allow the app or the permission. |
 | `the sign-in did not grant Presence.ReadWrite: <scopes>` | The sign-in succeeded without the permission that stay-green needs. | An admin who allows `Presence.ReadWrite` for Microsoft Graph Command Line Tools. |
-| `could not store the sign-in on <HOST>` | The `ssh` command failed. | A working `ssh HOST` from this computer. |
+| `could not store the sign-in on <HOST>` | The `ssh` command failed, the connection dropped before the whole token arrived, or `HOST` has no `flock` or `mktemp`. The token stored before stays as it was. | Another `login HOST` once `ssh HOST` works from this computer. |

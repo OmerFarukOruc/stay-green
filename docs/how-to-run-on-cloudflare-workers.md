@@ -96,7 +96,12 @@ Every 4 minutes inside your schedule, the Worker logs a line such as `marked Ava
 
 ## Sign in again
 
-To recover from `the sign-in was rejected earlier` or switch accounts, run a fresh sign-in and upload the new refresh token. Run both commands outside your scheduled hours and at least a minute before the next window starts, so an in-flight Worker run or a lagging KV read cannot overwrite your uploaded token with a renewed copy of the old one:
+To recover from `the sign-in was rejected earlier` or switch accounts, run a fresh sign-in and upload the new refresh token while no run can touch the stored one. Outside your schedule, each run ends before it reads KV, so the schedule works as the pause:
+
+- Start at least 2 minutes after your schedule ends. A run that started inside the schedule has finished by then, because it waits at most 30 seconds for each of its three requests to Microsoft.
+- Finish at least a minute before your schedule starts again. Cloudflare says a KV change [can take 60 seconds or more](https://developers.cloudflare.com/kv/concepts/how-kv-works/) to reach every location.
+
+A run that overlaps the upload can write a renewed copy of the old refresh token over yours, and KV has no lock that could stop it.
 
 ```sh
 python3 stay-green login
