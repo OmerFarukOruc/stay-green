@@ -64,12 +64,15 @@ test("without TIME_ZONE the Worker reads the schedule in UTC", async () => {
 });
 
 test("invalid schedules and zones are refused by the guard that owns them, before any request", { concurrency: 5 }, async (t) => {
-	for (const { name, schedule, zone = "UTC", error } of CASES.invalid) {
-		t.test(name, async () => {
-			const result = await runOnce({ schedule, zone });
-			assert.equal(result.ok, false);
-			assert.ok(result.text.includes(ERROR_TEXT[error]), result.text);
-			assert.equal(result.contacted, false);
-		});
-	}
+	// Each case starts its own Worker, so the subtests run 5 at a time. Node 22 cancels a subtest that is not awaited.
+	await Promise.all(
+		CASES.invalid.map(({ name, schedule, zone = "UTC", error }) =>
+			t.test(name, async () => {
+				const result = await runOnce({ schedule, zone });
+				assert.equal(result.ok, false);
+				assert.ok(result.text.includes(ERROR_TEXT[error]), result.text);
+				assert.equal(result.contacted, false);
+			}),
+		),
+	);
 });
