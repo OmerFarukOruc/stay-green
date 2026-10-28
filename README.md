@@ -88,7 +88,7 @@ Only a signed-in account, or a Worker clock that a test could set, can show the 
 - A renewal that succeeds: both tokens replaced, in private files for the script.
 - `stay-green login` on your own computer: the private folder and file, and a sign-in during a renewal that ends with the new account.
 - The ssh call of `login HOST` itself. The tests run its remote command, so a missing line break on the input or an ignored ssh exit status goes unnoticed.
-- The Worker's schedule on fixed dates: a daylight saving change in one running Worker, and the valid cases of `tests/schedule-cases.json`. The Worker tests check each format rule around the current time instead, and they check the default schedule only on the day they run: noon is inside it on a weekday and outside on a weekend.
+- The Worker's schedule on fixed dates: a daylight saving change in one running Worker, and the valid cases of `tests/schedule-cases.json`. The Worker tests check each format rule around the current time instead, and they check the default schedule only on the day they run: noon is inside it on a weekday and outside on a weekend. So on a weekend they cannot tell a blank schedule, which is never inside, from the default.
 
 ## License
 

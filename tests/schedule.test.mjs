@@ -63,19 +63,23 @@ function zoneWhere(hour) {
 }
 
 // Returns a zone where it is now between 12:00 and 13:00, today's name there, the 40 minutes around now, and a range
-// on the same day that does not hold now.
+// before and a range after them on the same day. A test puts the range that holds now between the other two, so a
+// parser that keeps only the first or only the last one misses it.
 function aroundNoon() {
 	const zone = zoneWhere(12);
 	const now = Date.now();
 	const today = zoneAt(zone, now).day;
 	const [start, end] = [zoneAt(zone, now - 20 * MINUTE).time, zoneAt(zone, now + 20 * MINUTE).time];
-	return { zone, today, start, end, around: `${start}-${end}`, far: "00:00-01:00" };
+	return { zone, today, start, end, around: `${start}-${end}`, before: "00:00-01:00", after: "23:00-24:00" };
 }
 
 test("a range includes its start minute and excludes its end minute, read in TIME_ZONE", async () => {
 	// The runs fire just after a minute starts, so no minute ends between the schedule and the run. The first minute
 	// that starts at least 10 seconds from now leaves time for the Workers to start.
-	const at = Math.ceil((Date.now() + 10_000) / MINUTE) * MINUTE;
+	let at = Math.ceil((Date.now() + 10_000) / MINUTE) * MINUTE;
+	// A range that ends at 00:00 is written as 24:00 on the day before, which an end read as inclusive never matches
+	// either, so the test takes the next minute.
+	if (zoneAt(ZONE, at).time === "00:00") at += MINUTE;
 	const settings = [
 		{ schedule: rules(ZONE, at, at + 20 * MINUTE), zone: ZONE },
 		{ schedule: rules(ZONE, at - 20 * MINUTE, at), zone: ZONE },
@@ -102,19 +106,19 @@ test("without TIME_ZONE the Worker reads the schedule in UTC", async () => {
 });
 
 test("rules for the same day add their ranges", async () => {
-	const { zone, today, around, far } = aroundNoon();
-	assertInside(await runOnce({ schedule: `${today} ${around}; ${today} ${far}`, zone }));
+	const { zone, today, around, before, after } = aroundNoon();
+	assertInside(await runOnce({ schedule: `${today} ${before}; ${today} ${around}; ${today} ${after}`, zone }));
 });
 
 test("a comma joins time ranges", async () => {
-	const { zone, today, around, far } = aroundNoon();
-	assertInside(await runOnce({ schedule: `${today} ${far}, ${around}`, zone }));
+	const { zone, today, around, before, after } = aroundNoon();
+	assertInside(await runOnce({ schedule: `${today} ${before}, ${around}, ${after}`, zone }));
 });
 
 test("a comma joins days", async () => {
 	const { zone, today, around } = aroundNoon();
-	const other = DAYS[(DAYS.indexOf(today) + 3) % 7];
-	assertInside(await runOnce({ schedule: `${other},${today} ${around}`, zone }));
+	const [first, last] = [3, 5].map((ahead) => DAYS[(DAYS.indexOf(today) + ahead) % 7]);
+	assertInside(await runOnce({ schedule: `${first},${today},${last} ${around}`, zone }));
 });
 
 test("a day range wraps past Sunday", async () => {
