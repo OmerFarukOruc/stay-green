@@ -5,7 +5,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,27 +19,14 @@ const WRANGLER = fileURLToPath(new URL("../node_modules/.bin/wrangler", import.m
 
 export const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-function freePort() {
-	return new Promise((resolve, reject) => {
-		const server = createServer();
-		server.on("error", reject);
-		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address();
-			server.close(() => resolve(port));
-		});
-	});
-}
-
 // Starts the Worker with SCHEDULE and TIME_ZONE set as on Cloudflare. stop() ends it and removes its KV data.
 export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 	const persist = mkdtempSync(join(tmpdir(), "stay-green-worker-"));
-	const port = await freePort();
-	// Each Worker gets its own DevTools port too, so several can start at once.
-	const inspector = await freePort();
 	const child = spawn(
 		WRANGLER,
-		["dev", "--test-scheduled", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector),
-			"--persist-to", persist,
+		// Port 0 lets the system pick free ports for the server and DevTools when it binds them, so Workers that start
+		// at the same time never collide.
+		["dev", "--test-scheduled", "--ip", "127.0.0.1", "--port", "0", "--inspector-port", "0", "--persist-to", persist,
 			"--var", `SCHEDULE:${schedule}`, "--var", `TIME_ZONE:${zone}`],
 		{ cwd: WORKER_DIR, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
 	);
@@ -54,14 +40,15 @@ export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 		rmSync(persist, { recursive: true, force: true });
 	}
 	const deadline = Date.now() + 60_000;
-	while (!output.includes("Ready on")) {
+	let ready;
+	while (!(ready = output.match(/Ready on http:\/\/127\.0\.0\.1:(\d+)/))) {
 		if (child.exitCode !== null || Date.now() > deadline) {
 			await stop();
 			throw new Error(`wrangler dev did not start:\n${output}`);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	const base = `http://127.0.0.1:${port}`;
+	const base = `http://127.0.0.1:${ready[1]}`;
 	// The local explorer API of wrangler dev, which answers like the Cloudflare API for Workers KV.
 	const value = (key) => `${base}/cdn-cgi/local/explorer/api/storage/kv/namespaces/TOKENS/values/${encodeURIComponent(key)}`;
 	const kv = {
