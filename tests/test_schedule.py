@@ -1,4 +1,5 @@
-"""Contract: the schedule format of docs/reference.md. tests/schedule-cases.json is read by the Worker tests too."""
+"""Contract: the schedule format of docs/reference.md. The Worker tests read only the invalid cases of
+tests/schedule-cases.json, because workerd runs on the real clock; tests/schedule.test.mjs builds its own."""
 import json
 import os
 import time

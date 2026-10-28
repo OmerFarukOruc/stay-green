@@ -51,6 +51,15 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 # Error codes of the sign-in service that only a new sign-in fixes. Any other failure, such as throttling,
 # a server error, a network error, or a proxy's error page, fails only that run, and the next run tries again.
 SIGN_IN_AGAIN = {"invalid_grant", "interaction_required", "consent_required", "invalid_client", "unauthorized_client"}
+# What login HOST runs on HOST, with the refresh token and a line break on its input. sh runs it, whatever the
+# login shell on HOST is. read fails when the connection drops before the line break that ends the token, so a cut
+# token never replaces the stored one. The new file replaces the old one in one rename, under the same lock that run
+# and status take. A new sign-in also drops the cached access token and the mark of a failed renewal.
+STORE_ON_HOST = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && chmod 700 "$d"'
+                 ' && IFS= read -r token && [ -n "$token" ] && exec 9>>"$d/lock" && flock 9'
+                 ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && rm -f "$d/access-token" "$d/renewal-failed"'
+                 ' && { printf "%s\\n" "$token" > "$t" && sync && mv -f "$t" "$d/refresh-token"'
+                 ' || { rm -f "$t"; exit 1; }; }')
 
 
 class RequestError(Exception):
@@ -217,15 +226,7 @@ def login(host: str | None) -> None:
             write_private(folder / "refresh-token", tokens["refresh_token"])
         print(f"Stored the sign-in in {folder}. Test it with: {shlex.quote(os.path.abspath(sys.argv[0]))} status")
         return
-    # sh runs the command, whatever the login shell on HOST is. read fails when the connection drops before the
-    # line break that ends the token, so a cut token never replaces the stored one. The new file replaces the old
-    # one in one rename, under the same lock that run and status take.
-    remote = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && chmod 700 "$d"'
-              ' && IFS= read -r token && [ -n "$token" ] && exec 9>>"$d/lock" && flock 9'
-              ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && rm -f "$d/access-token" "$d/renewal-failed"'
-              ' && { printf "%s\\n" "$token" > "$t" && sync && mv -f "$t" "$d/refresh-token"'
-              ' || { rm -f "$t"; exit 1; }; }')
-    stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(remote)],
+    stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(STORE_ON_HOST)],
                             input=tokens["refresh_token"] + "\n", text=True, check=False)
     if stored.returncode != 0:
         raise SystemExit(f"stay-green: could not store the sign-in on {host}")

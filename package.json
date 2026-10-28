@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "description": "Test dependencies only: the Worker tests run it in wrangler dev. The script and the Worker need no packages.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.152.0"
+  },
+  "overrides": {
+    "undici": "7.30.1"
+  }
+}

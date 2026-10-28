@@ -70,7 +70,25 @@ See [where to run it for free](docs/where-to-run-it-for-free.md) for how those t
 
 ## Tests
 
-The tests run offline. I fake Microsoft's sign-in and Graph on localhost, so they need no account. Run the script's tests with `python3 -m unittest discover -s tests -v` and the Worker's tests with `node --test tests/*.test.mjs` on Node 22. Both read `tests/schedule-cases.json`, so the script and the Worker keep the same schedule rules. GitHub Actions runs both on every push to `main` and on every pull request. The Worker's tests run its code under Node with an in-memory stand-in for Workers KV, so they do not cover differences in the Workers runtime itself. The 8 runs on Cloudflare described above are the check of the runtime.
+The tests use no fakes. They run the script and the Worker against the real Microsoft sign-in service and Graph, but they never sign in. The tokens they store are made up, so Microsoft refuses them, and the tests check what stay-green does with those real answers: the refusal mark and the cached access token. They also check the schedule, the stored sign-in through a real SSH server, the lock with the real `flock`, and for the script a failed network. The script's schedule tests set the clock, so they can check daylight saving changes on fixed dates. The Worker runs on the real clock, so its schedule tests build each schedule around the current time.
+
+The tests need HTTPS access to `login.microsoftonline.com` and `graph.microsoft.com`. Without it, the tests that call Microsoft fail instead of skipping.
+
+- Run the script's tests with `STAY_GREEN_TEST_SSH_HOST=localhost python3 -m unittest discover -s tests -v`. The store tests send the command that `login HOST` runs on HOST through a real SSH server on your own computer. They skip when the variable is unset, except in CI, where they fail.
+- Run the Worker's tests with `npm ci` and then `npm test` on Node 22. They start the Worker in `wrangler dev`, the local Workers runtime, with a local KV namespace, and read what each run did from the runtime's trace.
+
+GitHub Actions runs both on every push to `main` and on every pull request.
+
+Only a signed-in account, or a Worker clock that a test could set, can show the rest, so no test covers it. The runs on my own server and on Cloudflare described above show a sign-in, renewals that succeed, and setPresence. These contracts are unverified by automation:
+
+- setPresence itself: the request body, and a failed call that fails the run without the "marked Available" line.
+- The out-of-office skip, and the second schedule check right before setPresence.
+- The refusal codes other than `invalid_grant`, and the answers that fail only one run: 429, a 5xx, an HTML page, an answer that is not JSON or is cut short. The script's tests cover only a refused connection, and the Worker's tests cover no network failure.
+- Graph errors other than 401, which keep the cached access token.
+- A renewal that succeeds: both tokens replaced, in private files for the script.
+- `stay-green login` on your own computer: the private folder and file, and a sign-in during a renewal that ends with the new account.
+- The ssh call of `login HOST` itself. The tests run its remote command, so a missing line break on the input or an ignored ssh exit status goes unnoticed.
+- The Worker's schedule on fixed dates: a daylight saving change in one running Worker, and the valid cases of `tests/schedule-cases.json`. The Worker tests check each format rule around the current time instead, and they check the default schedule only on the day they run: noon is inside it on a weekday and outside on a weekend. So on a weekend they cannot tell a blank schedule, which is never inside, from the default.
 
 ## License
 

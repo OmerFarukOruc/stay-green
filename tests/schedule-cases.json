@@ -1,5 +1,5 @@
 {
-	"_about": "One list of schedule cases that tests/test_schedule.py and tests/schedule.test.mjs both read, so the Python script and the Worker cannot drift. The expected values come from docs/reference.md (Schedule) and the calendar, not from either implementation. 2026-10-26 is a Monday. New York changes to summer time on 2026-03-08 at 07:00Z and back on 2026-11-01 at 06:00Z.",
+	"_about": "Schedule cases at fixed instants for tests/test_schedule.py. tests/schedule.test.mjs reads only the invalid cases, so the script and the Worker refuse the same input. workerd runs on the real clock, which a test cannot set to these instants. The expected values come from docs/reference.md (Schedule) and the calendar, not from either implementation. 2026-10-26 is a Monday. New York changes to summer time on 2026-03-08 at 07:00Z and back on 2026-11-01 at 06:00Z.",
 	"_errors": "day, time, and zone name the guard that must reject the input. docs/reference.md (Errors) gives the message of each: 'unknown day in STAY_GREEN_SCHEDULE' or 'SCHEDULE', 'bad time range in ...', and 'unknown time zone in STAY_GREEN_TIME_ZONE' or 'Invalid time zone specified' in the Worker.",
 	"valid": [
 		{

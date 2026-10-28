@@ -1,162 +1,112 @@
-// Shared helpers for the Worker tests: the real Worker module, a fake of Microsoft's endpoints on local HTTP, and a
-// Workers KV namespace in memory. Nothing here talks to a real Microsoft or Cloudflare service.
+// Shared helpers for the Worker tests. Each test runs the Worker in `wrangler dev`, the local Workers runtime that
+// the deploy guide installs, with the real worker/wrangler.jsonc and a local Workers KV namespace. The Worker calls
+// the real Microsoft endpoints. The tests never sign in: the tokens they store are made up, so Microsoft refuses them,
+// and the tests check what the Worker does with Microsoft's real answers.
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import http from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const raw = JSON.parse(readFileSync(new URL("./microsoft-shapes.json", import.meta.url), "utf8"));
-const strip = (object) => Object.fromEntries(Object.entries(object).filter(([key]) => !key.startsWith("_")));
-export const SHAPES = Object.fromEntries(Object.entries(raw).filter(([key]) => !key.startsWith("_")).map(([key, body]) => [key, strip(body)]));
-export const CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"; // docs/reference.md, Requests to Microsoft
-export const SET_PRESENCE_BODY = {
-	// docs/reference.md, The setPresence request body is
-	sessionId: "14d82eec-204b-4c2f-b7e8-296a70dab67e",
-	availability: "Available",
-	activity: "Available",
-	expirationDuration: "PT15M",
-};
+export const MADE_UP_REFRESH_TOKEN = "made-up-refresh-token-for-the-stay-green-tests";
+export const MADE_UP_ACCESS_TOKEN = "made-up-access-token-for-the-stay-green-tests";
+export const ALWAYS = "Mon-Sun 00:00-24:00";
+export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+const WORKER_DIR = fileURLToPath(new URL("../worker/", import.meta.url));
+const WRANGLER = fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));
 
 export const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-export class Reply {
-	constructor(status, body, { contentType, declaredLength, drop } = {}) {
-		Object.assign(this, { status, body, contentType, declaredLength, drop });
+// Starts the Worker with SCHEDULE and TIME_ZONE set as on Cloudflare. stop() ends it and removes its KV data.
+export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
+	const persist = mkdtempSync(join(tmpdir(), "stay-green-worker-"));
+	const child = spawn(
+		WRANGLER,
+		// Port 0 lets the system pick free ports for the server and DevTools when it binds them, so Workers that start
+		// at the same time never collide.
+		["dev", "--test-scheduled", "--ip", "127.0.0.1", "--port", "0", "--inspector-port", "0", "--persist-to", persist,
+			"--var", `SCHEDULE:${schedule}`, "--var", `TIME_ZONE:${zone}`],
+		{ cwd: WORKER_DIR, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
+	);
+	let output = "";
+	child.stdout.on("data", (data) => (output += data));
+	child.stderr.on("data", (data) => (output += data));
+	const exited = new Promise((resolve) => child.on("exit", resolve));
+	async function stop() {
+		child.kill();
+		await exited;
+		rmSync(persist, { recursive: true, force: true });
 	}
-	static json(status, value) {
-		return new Reply(status, JSON.stringify(value), { contentType: "application/json" });
+	const deadline = Date.now() + 60_000;
+	let ready;
+	while (!(ready = output.match(/Ready on http:\/\/127\.0\.0\.1:(\d+)/))) {
+		if (child.exitCode !== null || Date.now() > deadline) {
+			await stop();
+			throw new Error(`wrangler dev did not start:\n${output}`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	static text(status, text, contentType = "text/html") {
-		return new Reply(status, text, { contentType });
-	}
-}
-export const DROP = new Reply(0, "", { drop: true }); // the server closes the connection without an answer
-export const html = (status) => Reply.text(status, "<html><body>Gateway page</body></html>");
-
-export function tokenOk({ access = "AT-NEW", refresh = "RT-NEW", expiresIn } = {}) {
-	return Reply.json(200, { ...SHAPES.tokenSuccess, access_token: access, refresh_token: refresh, ...(expiresIn ? { expires_in: expiresIn } : {}) });
-}
-export const tokenError = (code, status = 400) => Reply.json(status, { ...SHAPES.tokenError, error: code });
-export function graphError(status, code = "InvalidAuthenticationToken") {
-	const body = structuredClone(SHAPES.graphError);
-	body.error.code = code;
-	return Reply.json(status, body);
-}
-export function presence({ outOfOffice = false, availability = "Away", ...extra } = {}) {
-	const body = structuredClone(SHAPES.presence);
-	body.availability = availability;
-	body.outOfOfficeSettings.isOutOfOffice = outOfOffice;
-	return Reply.json(200, { ...body, ...extra });
-}
-
-export class FakeMicrosoft {
-	requests = [];
-	token = () => tokenOk();
-	presence = () => presence();
-	setPresence = () => Reply.text(200, "", "text/plain");
-
-	async start() {
-		this.server = http.createServer(async (req, res) => {
-			const chunks = [];
-			for await (const chunk of req) chunks.push(chunk);
-			const text = Buffer.concat(chunks).toString();
-			const path = req.url.split("?")[0];
-			const request = { method: req.method, path, auth: req.headers.authorization, text };
-			if ((req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded")) {
-				request.form = Object.fromEntries(new URLSearchParams(text));
-			} else if (text) {
-				request.json = JSON.parse(text);
-			}
-			this.requests.push(request);
-			let reply;
-			if (path === "/organizations/oauth2/v2.0/token") reply = await this.token(request);
-			else if (path === "/v1.0/me/presence") reply = await this.presence(request);
-			else if (path.startsWith("/v1.0/users/") && path.endsWith("/presence/setPresence")) reply = await this.setPresence(request);
-			else reply = Reply.json(404, SHAPES.graphError);
-			if (reply.drop) {
-				req.socket.destroy();
-				return;
-			}
-			const length = reply.declaredLength ?? Buffer.byteLength(reply.body);
-			res.writeHead(reply.status, { "Content-Type": reply.contentType, "Content-Length": length });
-			res.write(reply.body);
-			if (reply.declaredLength) req.socket.destroy(); // an answer cut short: fewer bytes than declared
-			else res.end();
+	const base = `http://127.0.0.1:${ready[1]}`;
+	// The local explorer API of wrangler dev, "a local subset of the Cloudflare API" in its own OpenAPI description.
+	const explorer = `${base}/cdn-cgi/local/explorer/api`;
+	const value = (key) => `${explorer}/storage/kv/namespaces/TOKENS/values/${encodeURIComponent(key)}`;
+	const kv = {
+		async get(key) {
+			const response = await fetch(value(key));
+			if (response.status === 404) return null;
+			if (!response.ok) throw new Error(`KV get ${key}: ${response.status}`);
+			return response.text();
+		},
+		async put(key, text) {
+			const response = await fetch(value(key), { method: "PUT", body: text });
+			if (!response.ok) throw new Error(`KV put ${key}: ${response.status}`);
+		},
+		async delete(key) {
+			const response = await fetch(value(key), { method: "DELETE" });
+			if (!response.ok) throw new Error(`KV delete ${key}: ${response.status}`);
+		},
+		async clear() {
+			for (const key of ["refresh-token", "cache"]) await this.delete(key);
+		},
+	};
+	async function query(sql) {
+		const response = await fetch(`${explorer}/local/observability/query`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ sql }),
 		});
-		await new Promise((resolve) => this.server.listen(0, "127.0.0.1", resolve));
-		this.base = `http://127.0.0.1:${this.server.address().port}`;
+		const { result } = await response.json();
+		return result.rows.map((row) => Object.fromEntries(result.columns.map((column, at) => [column, row[at]])));
 	}
-
-	async close() {
-		this.server.closeAllConnections();
-		await new Promise((resolve) => this.server.close(resolve));
+	// One cron event, as Cloudflare sends every 4 minutes. A run that throws answers 500 with the error. `calls` lists
+	// the KV reads and writes and the outbound fetches of the run, as the runtime traced them, such as "kv_get".
+	async function run() {
+		await fetch(`${explorer}/local/observability/clear`, { method: "POST" });
+		const response = await fetch(`${base}/__scheduled?cron=*/4+*+*+*+*`);
+		const text = await response.text();
+		// The trace of the run lands a moment after the answer; its root is the request to /__scheduled.
+		const deadline = Date.now() + 10_000;
+		let spans = [];
+		while (!spans.some((span) => span.parent_id === null) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			spans = await query("SELECT name, kind, parent_id FROM spans");
+		}
+		if (!spans.some((span) => span.parent_id === null)) throw new Error("the runtime recorded no trace of the run");
+		return { ok: response.ok, text, calls: spans.filter((span) => span.parent_id !== null).map((span) => span.name) };
 	}
-
-	// The Worker calls the real hosts. This sends those calls to the fake, with the same path, over real HTTP.
-	fetchToFake() {
-		const realFetch = globalThis.fetch;
-		return (url, init) => {
-			const target = new URL(url);
-			const hosts = ["login.microsoftonline.com", "graph.microsoft.com"];
-			if (!hosts.includes(target.host)) throw new Error(`the Worker called an unexpected host: ${target.host}`);
-			return realFetch(this.base + target.pathname + target.search, init);
-		};
-	}
-
-	to(pathEnd) {
-		return this.requests.filter((request) => request.path.endsWith(pathEnd));
-	}
+	return { kv, run, stop };
 }
 
-// Workers KV in memory. get(key, "json") throws on a value that is not JSON, as KV does.
-// https://developers.cloudflare.com/kv/api/read-key-value-pairs/
-export class FakeKV {
-	constructor(initial = {}) {
-		this.store = { ...initial };
-		this.operations = 0;
-	}
-	async get(key, type) {
-		this.operations++;
-		const value = this.store[key];
-		if (value === undefined) return null;
-		return type === "json" ? JSON.parse(value) : value;
-	}
-	async put(key, value) {
-		this.operations++;
-		this.store[key] = value;
-	}
-	async delete(key) {
-		this.operations++;
-		delete this.store[key];
-	}
-	keys() {
-		return Object.keys(this.store).sort();
-	}
+// The weekday and the time in a zone at an instant, from the system's time zone data rather than the ICU data that
+// the Worker uses.
+export function zoneAt(zone, ms) {
+	const result = spawnSync("date", ["-d", `@${Math.floor(ms / 1000)}`, "+%a %H:%M"], {
+		env: { ...process.env, TZ: zone, LC_ALL: "C" },
+		encoding: "utf8",
+	});
+	if (result.status !== 0) throw new Error(result.stderr);
+	const [day, time] = result.stdout.trim().split(" ");
+	return { day, time };
 }
-
-// The Worker keeps its parsed schedule and clock per module, as one Cloudflare isolate does. A query string makes
-// Node load a new copy of the same file.
-let copies = 0;
-export async function freshWorker() {
-	return (await import(new URL(`../worker/src/index.js?copy=${++copies}`, import.meta.url).href)).default;
-}
-
-export async function fire(worker, env) {
-	await worker.scheduled({ noRetry() {} }, env);
-}
-
-// A Worker under test: the fake Microsoft behind the global fetch, a KV namespace, and a clock fixed at `now`.
-export async function setup(t, { schedule = "Mon-Sun 00:00-24:00", zone = "UTC", now = "2026-10-26T10:00:00Z", kv = {} } = {}) {
-	const fake = new FakeMicrosoft();
-	await fake.start();
-	t.after(() => fake.close());
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse(now) });
-	t.mock.method(globalThis, "fetch", fake.fetchToFake());
-	t.mock.method(console, "log", () => {});
-	const worker = await freshWorker();
-	const store = new FakeKV(kv);
-	const env = { TOKENS: store, SCHEDULE: schedule, TIME_ZONE: zone };
-	return { fake, kv: store, env, run: () => fire(worker, env), setClock: (iso) => t.mock.timers.setTime(Date.parse(iso)) };
-}
-
-// A cache entry for a refresh token, as the Worker stores it (docs/reference.md, Worker settings).
-export const cacheEntry = (refresh, token, expires) => JSON.stringify({ hash: sha256(refresh), token, expires });
