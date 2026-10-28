@@ -8,6 +8,8 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
+import unittest
 from datetime import datetime
 from pathlib import Path
 
@@ -30,13 +32,13 @@ def load_script():
 sg = load_script()
 
 
-def stay_green(state_home, *args, schedule=ALWAYS, env=None, umask=0o077, timeout=60):
+def stay_green(state_home, *args, schedule=ALWAYS, env=None, umask=0o077):
     """Runs the script as a command, the way the timer does, with its state in state_home/stay-green."""
     full = {k: v for k, v in os.environ.items() if not k.startswith("STAY_GREEN_")}
     full.update({"XDG_STATE_HOME": str(state_home), "STAY_GREEN_SCHEDULE": schedule, "STAY_GREEN_TIME_ZONE": "UTC"})
     full.update(env or {})
     return subprocess.run([sys.executable, str(ROOT / "stay-green"), *args], env=full, umask=umask,
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True, timeout=60)
 
 
 def closed_port():
@@ -46,22 +48,29 @@ def closed_port():
         return sock.getsockname()[1]
 
 
-class Clock:
-    """The instant that the script's datetime.now(tz) returns. Move it with set()."""
+class StateCase(unittest.TestCase):
+    """A test with an empty state folder of mode 700 at self.state, inside the XDG_STATE_HOME at self.home."""
 
-    def __init__(self, iso):
-        self.set(iso)
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.state = self.home / "stay-green"
+        self.state.mkdir(mode=0o700)
 
-    def set(self, iso):
-        self.timestamp = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    def files(self):
+        return sorted(p.name for p in self.state.iterdir())
 
 
-def fixed_datetime(clock):
+def fixed_datetime(instant):
+    """A datetime class whose now(tz) returns the ISO instant, so the script's schedule check runs at that instant."""
+    timestamp = datetime.fromisoformat(instant.replace("Z", "+00:00")).timestamp()
+
     class FixedDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
             # fromtimestamp converts the way datetime.now does, for a zone and for the computer's own zone.
-            return datetime.fromtimestamp(clock.timestamp, tz)
+            return datetime.fromtimestamp(timestamp, tz)
 
     return FixedDateTime
 

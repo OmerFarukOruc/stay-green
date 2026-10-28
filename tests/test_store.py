@@ -5,30 +5,16 @@ import fcntl
 import os
 import shlex
 import subprocess
-import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
 
-from harness import mode_of, sg, stay_green
+from harness import StateCase, mode_of, sg, stay_green
 
 HOST = os.environ.get("STAY_GREEN_TEST_SSH_HOST")
 NEW_TOKEN = "new-refresh-token-" + "x" * 1400  # Microsoft's refresh tokens are about 1.4 KB
 OLD_TOKEN = "old-refresh-token\n"
-HOLD = 4  # seconds that a test holds the lock
-
-
-class StateCase(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.home = Path(tmp.name)
-        self.state = self.home / "stay-green"
-        self.state.mkdir(mode=0o700)
-
-    def files(self):
-        return sorted(p.name for p in self.state.iterdir())
+HOLD = 2  # seconds that a test holds the lock
 
 
 class StoreTest(StateCase):
