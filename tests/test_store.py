@@ -11,7 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
-from harness import MADE_UP_REFRESH_TOKEN, mode_of, sg, stay_green
+from harness import mode_of, sg, stay_green
 
 HOST = os.environ.get("STAY_GREEN_TEST_SSH_HOST")
 NEW_TOKEN = "new-refresh-token-" + "x" * 1400  # Microsoft's refresh tokens are about 1.4 KB
@@ -59,13 +59,15 @@ class StoreTest(StateCase):
         self.assertEqual((self.state / "refresh-token").read_text(), NEW_TOKEN + "\n")
         self.assertEqual(mode_of(self.state / "refresh-token"), 0o600)
         self.assertEqual(mode_of(self.state), 0o700)
+        self.assertEqual(mode_of(self.state / "lock"), 0o600)
         self.assertEqual(self.files(), ["lock", "refresh-token"])
 
-    def test_input_that_ends_before_the_line_break_keeps_the_old_sign_in(self):
-        # The connection drops in the middle of the token, or right after it, before the line break that ends it.
-        for cut in (30, len(NEW_TOKEN)):
-            with self.subTest(cut=cut):
-                result = self.store(NEW_TOKEN[:cut])
+    def test_input_without_a_whole_token_keeps_the_old_sign_in(self):
+        # The connection drops in the middle of the token, or right after it, before the line break that ends it; or
+        # the token is empty.
+        for data in (NEW_TOKEN[:30], NEW_TOKEN, "\n"):
+            with self.subTest(data=data[:30]):
+                result = self.store(data)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((self.state / "refresh-token").read_text(), OLD_TOKEN)
                 self.assertNotIn(".refresh-token.", " ".join(self.files()))
@@ -91,8 +93,8 @@ class StoreTest(StateCase):
 
 
 class RunLockTest(StateCase):
-    def test_a_run_waits_for_the_lock_before_it_renews(self):
-        (self.state / "refresh-token").write_text(MADE_UP_REFRESH_TOKEN)
+    def test_a_run_waits_for_the_lock_before_it_reads_the_sign_in(self):
+        # The folder holds no sign-in, so the run fails as soon as it holds the lock, and needs no network.
         lock = self.state / "lock"
         holder = subprocess.Popen(["flock", str(lock), "sleep", str(HOLD)])
         self.addCleanup(holder.wait)
@@ -101,9 +103,8 @@ class RunLockTest(StateCase):
         result = stay_green(self.home, "run")
         waited = time.monotonic() - start
         self.assertGreater(waited, HOLD - 1)
-        # After the wait, the run renews, and Microsoft refuses the made-up token.
-        self.assertIn("400 invalid_grant", result.stderr)
-        self.assertTrue((self.state / "renewal-failed").exists())
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no sign-in", result.stderr)
 
 
 def wait_until_locked(path):

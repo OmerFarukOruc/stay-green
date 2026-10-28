@@ -68,8 +68,9 @@ describe("the Worker with an always-on schedule", () => {
 		assert.match((await mark()).rejected, /invalid_grant/);
 	});
 
-	test("a damaged cache entry leads to a renewal", async () => {
-		for (const text of ["", "{not json", "[]", "null", '{"token": "x"}']) {
+	test("a damaged cache entry, or one for another refresh token, leads to a renewal", async () => {
+		const another = JSON.stringify({ hash: sha256("another refresh token"), token: MADE_UP_ACCESS_TOKEN, expires: Date.now() + 3_600_000 });
+		for (const text of ["", "{not json", "[]", "null", '{"token": "x"}', another]) {
 			await worker.kv.put("refresh-token", MADE_UP_REFRESH_TOKEN);
 			await worker.kv.put("cache", text);
 			const result = await worker.run();

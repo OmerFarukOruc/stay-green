@@ -49,8 +49,9 @@ export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	const base = `http://127.0.0.1:${ready[1]}`;
-	// The local explorer API of wrangler dev, which answers like the Cloudflare API for Workers KV.
-	const value = (key) => `${base}/cdn-cgi/local/explorer/api/storage/kv/namespaces/TOKENS/values/${encodeURIComponent(key)}`;
+	// The local explorer API of wrangler dev, "a local subset of the Cloudflare API" in its own OpenAPI description.
+	const explorer = `${base}/cdn-cgi/local/explorer/api`;
+	const value = (key) => `${explorer}/storage/kv/namespaces/TOKENS/values/${encodeURIComponent(key)}`;
 	const kv = {
 		async get(key) {
 			const response = await fetch(value(key));
@@ -70,17 +71,41 @@ export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 			for (const key of ["refresh-token", "cache"]) await this.delete(key);
 		},
 	};
-	// One cron event, as Cloudflare sends every 4 minutes. A run that throws answers 500 with the error.
+	async function query(sql) {
+		const response = await fetch(`${explorer}/local/observability/query`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ sql }),
+		});
+		const { result } = await response.json();
+		return result.rows.map((row) => Object.fromEntries(result.columns.map((column, at) => [column, row[at]])));
+	}
+	// One cron event, as Cloudflare sends every 4 minutes. A run that throws answers 500 with the error. `calls` lists
+	// the KV reads and writes and the outbound fetches of the run, as the runtime traced them, such as "kv_get".
 	async function run() {
+		await fetch(`${explorer}/local/observability/clear`, { method: "POST" });
 		const response = await fetch(`${base}/__scheduled?cron=*/4+*+*+*+*`);
-		return { ok: response.ok, text: await response.text() };
+		const text = await response.text();
+		// The trace of the run lands a moment after the answer; its root is the request to /__scheduled.
+		const deadline = Date.now() + 10_000;
+		let spans = [];
+		while (!spans.some((span) => span.parent_id === null) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			spans = await query("SELECT name, kind, parent_id FROM spans");
+		}
+		if (!spans.some((span) => span.parent_id === null)) throw new Error("the runtime recorded no trace of the run");
+		return { ok: response.ok, text, calls: spans.filter((span) => span.parent_id !== null).map((span) => span.name) };
 	}
 	return { kv, run, stop };
 }
 
-// The weekday and the time in a zone, from the system's time zone data rather than the ICU data that the Worker uses.
-export function zoneNow(zone, offsetMinutes = 0) {
-	const result = spawnSync("date", ["-d", `${offsetMinutes} minutes`, "+%a %H:%M"], { env: { ...process.env, TZ: zone, LC_ALL: "C" }, encoding: "utf8" });
+// The weekday and the time in a zone at an instant, from the system's time zone data rather than the ICU data that
+// the Worker uses.
+export function zoneAt(zone, ms) {
+	const result = spawnSync("date", ["-d", `@${Math.floor(ms / 1000)}`, "+%a %H:%M"], {
+		env: { ...process.env, TZ: zone, LC_ALL: "C" },
+		encoding: "utf8",
+	});
 	if (result.status !== 0) throw new Error(result.stderr);
 	const [day, time] = result.stdout.trim().split(" ");
 	return { day, time };
