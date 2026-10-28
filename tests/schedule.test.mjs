@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DAYS, startWorker, zoneAt } from "./harness.mjs";
 
 const CASES = JSON.parse(readFileSync(new URL("./schedule-cases.json", import.meta.url), "utf8"));
@@ -17,6 +18,10 @@ const ERROR_TEXT = {
 };
 const MINUTE = 60_000;
 const ZONE = "Asia/Kolkata"; // UTC+05:30, so a schedule read in UTC or in whole hours misses
+// A range before and a range after the 40 minutes around noon, on the same day. A test puts the range that holds now
+// between the two, so a parser that keeps only the first or only the last one misses it.
+const BEFORE = "00:00-01:00";
+const AFTER = "23:00-24:00";
 
 // Starts a Worker for each setting, passes them to `use`, and stops every Worker that started.
 async function withWorkers(settings, use) {
@@ -62,21 +67,20 @@ function zoneWhere(hour) {
 	return offset === 0 ? "Etc/GMT" : `Etc/GMT${offset > 0 ? "-" : "+"}${Math.abs(offset)}`;
 }
 
-// Returns a zone where it is now between 12:00 and 13:00, today's name there, the 40 minutes around now, and a range
-// before and a range after them on the same day. A test puts the range that holds now between the other two, so a
-// parser that keeps only the first or only the last one misses it.
+// Returns a zone where it is now between 12:00 and 13:00, today's name there, and the 40 minutes around now.
 function aroundNoon() {
 	const zone = zoneWhere(12);
 	const now = Date.now();
 	const today = zoneAt(zone, now).day;
 	const [start, end] = [zoneAt(zone, now - 20 * MINUTE).time, zoneAt(zone, now + 20 * MINUTE).time];
-	return { zone, today, start, end, around: `${start}-${end}`, before: "00:00-01:00", after: "23:00-24:00" };
+	return { zone, today, start, end, around: `${start}-${end}` };
 }
 
 test("a range includes its start minute and excludes its end minute, read in TIME_ZONE", async () => {
-	// The runs fire just after a minute starts, so no minute ends between the schedule and the run. The first minute
-	// that starts at least 10 seconds from now leaves time for the Workers to start.
-	let at = Math.ceil((Date.now() + 10_000) / MINUTE) * MINUTE;
+	// The runs land in the minute that starts at `at`, so no minute ends between the schedule and the run. That is this
+	// minute while at least 20 seconds of it are left for the Workers to start and run, and the next minute otherwise.
+	let at = Math.floor(Date.now() / MINUTE) * MINUTE;
+	if (Date.now() - at > 40_000) at += MINUTE;
 	// A range that ends at 00:00 is written as 24:00 on the day before, which an end read as inclusive never matches
 	// either, so the test takes the next minute.
 	if (zoneAt(ZONE, at).time === "00:00") at += MINUTE;
@@ -86,7 +90,7 @@ test("a range includes its start minute and excludes its end minute, read in TIM
 	];
 	const [starting, ending] = await withWorkers(settings, async (workers) => {
 		const wait = at + 100 - Date.now();
-		if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+		if (wait > 0) await sleep(wait);
 		const results = await Promise.all(workers.map((worker) => worker.run()));
 		assert.ok(Date.now() < at + MINUTE, "the minute ended before the runs did");
 		return results;
@@ -106,13 +110,13 @@ test("without TIME_ZONE the Worker reads the schedule in UTC", async () => {
 });
 
 test("rules for the same day add their ranges", async () => {
-	const { zone, today, around, before, after } = aroundNoon();
-	assertInside(await runOnce({ schedule: `${today} ${before}; ${today} ${around}; ${today} ${after}`, zone }));
+	const { zone, today, around } = aroundNoon();
+	assertInside(await runOnce({ schedule: `${today} ${BEFORE}; ${today} ${around}; ${today} ${AFTER}`, zone }));
 });
 
 test("a comma joins time ranges", async () => {
-	const { zone, today, around, before, after } = aroundNoon();
-	assertInside(await runOnce({ schedule: `${today} ${before}, ${around}, ${after}`, zone }));
+	const { zone, today, around } = aroundNoon();
+	assertInside(await runOnce({ schedule: `${today} ${BEFORE}, ${around}, ${AFTER}`, zone }));
 });
 
 test("a comma joins days", async () => {

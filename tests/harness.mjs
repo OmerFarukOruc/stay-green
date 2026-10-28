@@ -7,11 +7,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 export const MADE_UP_REFRESH_TOKEN = "made-up-refresh-token-for-the-stay-green-tests";
 export const MADE_UP_ACCESS_TOKEN = "made-up-access-token-for-the-stay-green-tests";
-export const ALWAYS = "Mon-Sun 00:00-24:00";
+const ALWAYS = "Mon-Sun 00:00-24:00";
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const WORKER_DIR = fileURLToPath(new URL("../worker/", import.meta.url));
@@ -46,7 +47,7 @@ export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 			await stop();
 			throw new Error(`wrangler dev did not start:\n${output}`);
 		}
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await sleep(100);
 	}
 	const base = `http://127.0.0.1:${ready[1]}`;
 	// The local explorer API of wrangler dev, "a local subset of the Cloudflare API" in its own OpenAPI description.
@@ -88,10 +89,11 @@ export async function startWorker({ schedule = ALWAYS, zone = "UTC" } = {}) {
 		const text = await response.text();
 		// The trace of the run lands a moment after the answer; its root is the request to /__scheduled.
 		const deadline = Date.now() + 10_000;
-		let spans = [];
+		const traced = () => query("SELECT name, kind, parent_id FROM spans");
+		let spans = await traced();
 		while (!spans.some((span) => span.parent_id === null) && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			spans = await query("SELECT name, kind, parent_id FROM spans");
+			await sleep(100);
+			spans = await traced();
 		}
 		if (!spans.some((span) => span.parent_id === null)) throw new Error("the runtime recorded no trace of the run");
 		return { ok: response.ok, text, calls: spans.filter((span) => span.parent_id !== null).map((span) => span.name) };

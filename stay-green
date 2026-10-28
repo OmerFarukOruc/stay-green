@@ -62,7 +62,11 @@ STORE_ON_HOST = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-gre
                  ' || { rm -f "$t"; exit 1; }; }')
 
 
-class RequestError(Exception):
+class StayGreenError(Exception):
+    """An expected failure. main() prints it as one line that starts with stay-green: and exits with 1."""
+
+
+class RequestError(StayGreenError):
     def __init__(self, status: int, code: str | None, reason: str) -> None:
         super().__init__(f"{status} {code}: {reason}" if code else f"{status}: the answer has no error code")
         self.status = status
@@ -91,13 +95,9 @@ def day_range(span: str) -> list[int]:
     # Mon-Fri, Sat, or a range across the weekend such as Fri-Mon.
     first, _, last = span.partition("-")
     if first not in DAYS or (last or first) not in DAYS:
-        raise SystemExit(f"stay-green: unknown day in STAY_GREEN_SCHEDULE: {span!r}")
+        raise StayGreenError(f"unknown day in STAY_GREEN_SCHEDULE: {span!r}")
     day, stop = DAYS.index(first), DAYS.index(last or first)
-    days = [day]
-    while day != stop:
-        day = (day + 1) % 7
-        days.append(day)
-    return days
+    return [(day + step) % 7 for step in range((stop - day) % 7 + 1)]
 
 
 def time_range(span: str) -> tuple[str, str]:
@@ -105,7 +105,7 @@ def time_range(span: str) -> tuple[str, str]:
     start, _, end = span.partition("-")
     hhmm = r"([01][0-9]|2[0-3]):[0-5][0-9]"
     if not (re.fullmatch(hhmm, start) and re.fullmatch(f"{hhmm}|24:00", end) and start < end):
-        raise SystemExit(f"stay-green: bad time range in STAY_GREEN_SCHEDULE: {span!r}")
+        raise StayGreenError(f"bad time range in STAY_GREEN_SCHEDULE: {span!r}")
     return start, end
 
 
@@ -114,7 +114,7 @@ def scheduled() -> bool:
     try:
         now = datetime.now(zoneinfo.ZoneInfo(zone)) if zone else datetime.now()
     except (zoneinfo.ZoneInfoNotFoundError, ValueError):
-        raise SystemExit(f"stay-green: unknown time zone in STAY_GREEN_TIME_ZONE: {zone!r}") from None
+        raise StayGreenError(f"unknown time zone in STAY_GREEN_TIME_ZONE: {zone!r}") from None
     current = now.strftime("%H:%M")
     return any(start <= current < end for start, end in schedule()[now.weekday()])
 
@@ -135,8 +135,7 @@ def request(url: str, token: str | None = None, form: dict | None = None, payloa
             detail = json.loads(error.read())
         except (OSError, ValueError, http.client.HTTPException):
             detail = None
-        if not isinstance(detail, dict):
-            detail = {}
+        detail = detail if isinstance(detail, dict) else {}
         # Graph nests its error in an object; the sign-in endpoint sends a code and a description.
         err = detail.get("error")
         if isinstance(err, dict):
@@ -200,10 +199,10 @@ def login(host: str | None) -> None:
     while not result:
         server.timeout = deadline - time.monotonic()
         if server.timeout <= 0:
-            raise SystemExit("stay-green: no sign-in within 5 minutes")
+            raise StayGreenError("no sign-in within 5 minutes")
         server.handle_request()
     if "code" not in result:
-        raise SystemExit(f"stay-green: sign-in failed: {result.get('error')}: {result.get('error_description')}")
+        raise StayGreenError(f"sign-in failed: {result.get('error')}: {result.get('error_description')}")
     tokens = request(f"{AUTHORITY}/token", form={
         "client_id": CLIENT_ID,
         "grant_type": "authorization_code",
@@ -213,8 +212,7 @@ def login(host: str | None) -> None:
         "scope": SCOPE,
     })
     if "Presence.ReadWrite" not in tokens.get("scope", ""):
-        raise SystemExit(f"stay-green: the sign-in did not grant Presence.ReadWrite: {tokens.get('scope')}")
-    # A new sign-in also drops the cached access token and the mark of a failed renewal.
+        raise StayGreenError(f"the sign-in did not grant Presence.ReadWrite: {tokens.get('scope')}")
     if host is None:
         folder = state_dir()
         folder.mkdir(parents=True, exist_ok=True)
@@ -229,7 +227,7 @@ def login(host: str | None) -> None:
     stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(STORE_ON_HOST)],
                             input=tokens["refresh_token"] + "\n", text=True, check=False)
     if stored.returncode != 0:
-        raise SystemExit(f"stay-green: could not store the sign-in on {host}")
+        raise StayGreenError(f"could not store the sign-in on {host}")
     print(f"Stored the sign-in on {host}. Test it there with the status command of stay-green.")
 
 
@@ -243,7 +241,7 @@ def locked(folder: Path):
     try:
         file = open(folder / "lock", "a")  # noqa: SIM115, the with below closes it
     except OSError as error:
-        raise SystemExit(f"stay-green: cannot open {folder / 'lock'}: {error.strerror}") from None
+        raise StayGreenError(f"cannot open {folder / 'lock'}: {error.strerror}") from None
     with file:
         fcntl.flock(file, fcntl.LOCK_EX)
         yield
@@ -265,8 +263,10 @@ def write_private(path: Path, text: str) -> None:
 
 
 def access_token(state: Path) -> str:
+    refresh = state / "refresh-token"
+    no_sign_in = f"no sign-in in {refresh}; sign in with: stay-green login"
     if not state.is_dir():
-        raise SystemExit(f"stay-green: no sign-in in {state / 'refresh-token'}; sign in with: stay-green login")
+        raise StayGreenError(no_sign_in)
     with locked(state):
         cached = state / "access-token"
         try:
@@ -280,10 +280,9 @@ def access_token(state: Path) -> str:
         failed = state / "renewal-failed"
         if failed.exists():
             reason = failed.read_text().strip()
-            raise SystemExit(f"stay-green: the sign-in was rejected earlier ({reason}); sign in again")
-        refresh = state / "refresh-token"
+            raise StayGreenError(f"the sign-in was rejected earlier ({reason}); sign in again")
         if not refresh.exists():
-            raise SystemExit(f"stay-green: no sign-in in {refresh}; sign in with: stay-green login")
+            raise StayGreenError(no_sign_in)
         try:
             tokens = request(f"{AUTHORITY}/token", form={
                 "client_id": CLIENT_ID,
@@ -358,7 +357,7 @@ def main() -> None:
         else:
             print("usage: stay-green login [HOST] | stay-green run | stay-green status", file=sys.stderr)
             raise SystemExit(64)
-    except RequestError as error:
+    except StayGreenError as error:
         raise SystemExit(f"stay-green: {error}") from None
 
 

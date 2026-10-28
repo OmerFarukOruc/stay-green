@@ -28,7 +28,7 @@ class RequestError extends Error {
 	}
 }
 
-async function request(url, { token, form, payload } = {}) {
+async function request(url, { token, form, payload }) {
 	const headers = token ? { Authorization: `Bearer ${token}` } : {};
 	let body;
 	if (form) {
@@ -97,19 +97,15 @@ function dayRange(span) {
 	if (!DAYS.includes(first) || !DAYS.includes(last || first)) {
 		throw new Error(`unknown day in SCHEDULE: "${span}"`);
 	}
-	let day = DAYS.indexOf(first);
+	const day = DAYS.indexOf(first);
 	const stop = DAYS.indexOf(last || first);
-	const days = [day];
-	while (day !== stop) {
-		day = (day + 1) % 7;
-		days.push(day);
-	}
-	return days;
+	return Array.from({ length: ((stop - day + 7) % 7) + 1 }, (_, step) => (day + step) % 7);
 }
 
 // Times compare as text, so each one needs two-digit hours and minutes. 24:00 can end a range.
-const START = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
-const END = /^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$/;
+const HHMM = "([01][0-9]|2[0-3]):[0-5][0-9]";
+const START = new RegExp(`^${HHMM}$`);
+const END = new RegExp(`^(${HHMM}|24:00)$`);
 
 function timeRange(span) {
 	const [start, end] = partition(span, "-");
@@ -201,6 +197,9 @@ async function graph(env, path, payload) {
 }
 
 async function run(env) {
+	if (!scheduled(env)) {
+		return;
+	}
 	const presence = await graph(env, "/me/presence");
 	if (presence.outOfOfficeSettings?.isOutOfOffice) {
 		console.log(`out of office; left the status at ${presence.availability}`);
@@ -223,9 +222,7 @@ async function run(env) {
 export default {
 	async scheduled(controller, env) {
 		try {
-			if (scheduled(env)) {
-				await run(env);
-			}
+			await run(env);
 		} catch (error) {
 			// The next run, 4 minutes later, is the retry.
 			controller.noRetry();

@@ -2,23 +2,15 @@
 Microsoft, and how it keeps, renews, and drops the tokens it stores. Each test runs the script as a command against
 the real sign-in service and Graph, which refuse the made-up tokens it holds."""
 import json
-import tempfile
 import time
 import unittest
-from pathlib import Path
 
-from harness import MADE_UP_ACCESS_TOKEN, MADE_UP_REFRESH_TOKEN, closed_port, mode_of, stay_green
-
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+from harness import MADE_UP_ACCESS_TOKEN, MADE_UP_REFRESH_TOKEN, StateCase, closed_port, mode_of, sg, stay_green
 
 
-class TokenCase(unittest.TestCase):
+class TokenCase(StateCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.home = Path(tmp.name)
-        self.state = self.home / "stay-green"
-        self.state.mkdir(mode=0o700)
+        super().setUp()
         self.write("refresh-token", MADE_UP_REFRESH_TOKEN)
 
     def write(self, name, text):
@@ -36,19 +28,25 @@ class TokenCase(unittest.TestCase):
     def run_command(self, **options):
         return stay_green(self.home, "run", **options)
 
+    def assert_renewal_refused(self, result):
+        # The run sent the made-up refresh token, and the sign-in service refused it.
+        self.assertIn("400 invalid_grant", result.stderr)
+        self.assertTrue(self.exists("renewal-failed"))
+
 
 class RefusalTest(TokenCase):
     def test_a_refresh_token_that_microsoft_refuses_is_marked_and_not_sent_again(self):
         first = self.run_command()
         self.assertEqual(first.returncode, 1)
-        self.assertIn("400 invalid_grant: AADSTS", first.stderr)
+        # docs/reference.md (Exit codes): an expected error prints one line that starts with stay-green:.
+        self.assertRegex(first.stderr, r"\Astay-green: 400 invalid_grant: AADSTS.*\n\Z")
         mark = self.read("renewal-failed")
         self.assertIn("invalid_grant", mark)
         self.assertEqual(mode_of(self.state / "renewal-failed"), 0o600)
 
         second = self.run_command()
         self.assertEqual(second.returncode, 1)
-        self.assertIn("the sign-in was rejected earlier (400 invalid_grant", second.stderr)
+        self.assertRegex(second.stderr, r"\Astay-green: the sign-in was rejected earlier \(400 invalid_grant.*\n\Z")
         # Each answer from Microsoft carries a new trace ID, so a second request would have changed the mark.
         self.assertEqual(self.read("renewal-failed"), mark)
 
@@ -60,9 +58,7 @@ class RefusalTest(TokenCase):
         self.assertIn("unreachable", offline.stderr)
         self.assertFalse(self.exists("renewal-failed"))
 
-        online = self.run_command()
-        self.assertIn("400 invalid_grant", online.stderr)
-        self.assertTrue(self.exists("renewal-failed"))
+        self.assert_renewal_refused(self.run_command())
 
 
 class CacheTest(TokenCase):
@@ -76,8 +72,7 @@ class CacheTest(TokenCase):
                 result = self.run_command()
                 self.assertEqual(result.returncode, 1)
                 if renews:
-                    self.assertIn("400 invalid_grant", result.stderr)
-                    self.assertTrue(self.exists("renewal-failed"))
+                    self.assert_renewal_refused(result)
                 else:
                     self.assertIn("401 InvalidAuthenticationToken", result.stderr)
                     self.assertFalse(self.exists("renewal-failed"))
@@ -88,9 +83,7 @@ class CacheTest(TokenCase):
         self.assertIn("401 InvalidAuthenticationToken", refused.stderr)
         self.assertFalse(self.exists("access-token"))
 
-        renewed = self.run_command()
-        self.assertIn("400 invalid_grant", renewed.stderr)
-        self.assertTrue(self.exists("renewal-failed"))
+        self.assert_renewal_refused(self.run_command())
 
     def test_a_damaged_cached_access_token_leads_to_a_renewal(self):
         for text in ("", "{not json", "[]", '{"token": "x"}', '{"token": "x", "expires": "soon"}'):
@@ -99,31 +92,27 @@ class CacheTest(TokenCase):
                 self.write("access-token", text)
                 result = self.run_command()
                 self.assertNotIn("Traceback", result.stderr)
-                self.assertIn("400 invalid_grant", result.stderr)
-                self.assertTrue(self.exists("renewal-failed"))
+                self.assert_renewal_refused(result)
 
 
 class ScheduleRunTest(TokenCase):
     def test_outside_the_schedule_the_run_contacts_nobody(self):
         # A day three days away is outside the schedule for the whole test, even across midnight.
-        other_day = DAYS[(time.gmtime().tm_wday + 3) % 7]
+        other_day = sg.DAYS[(time.gmtime().tm_wday + 3) % 7]
         result = self.run_command(schedule=f"{other_day} 00:00-24:00")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         # A request would have left the refusal mark or taken the lock.
-        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["refresh-token"])
+        self.assertEqual(self.files(), ["refresh-token"])
 
 
-class CommandTest(unittest.TestCase):
+class CommandTest(StateCase):
     def test_the_command_creates_its_files_private_under_an_open_umask(self):
         # docs/reference.md (Files): each file has mode 600, whatever umask the timer or the shell starts it with.
-        with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "stay-green"
-            state.mkdir(mode=0o700)
-            # No sign-in is stored, so the run stops after it takes the lock and before any request.
-            result = stay_green(tmp, "run", umask=0o022)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("no sign-in", result.stderr)
-            self.assertEqual(mode_of(state / "lock"), 0o600)
+        # No sign-in is stored, so the run stops after it takes the lock and before any request.
+        result = stay_green(self.home, "run", umask=0o022)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no sign-in", result.stderr)
+        self.assertEqual(mode_of(self.state / "lock"), 0o600)
 
 
 if __name__ == "__main__":
