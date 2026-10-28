@@ -28,7 +28,20 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
+      # The login HOST tests send the store command to this runner through a real SSH server.
+      - name: Start an SSH server that accepts this runner's own key
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends openssh-server
+          sudo systemctl start ssh
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes localhost true
       - name: Run the Python tests
+        env:
+          STAY_GREEN_TEST_SSH_HOST: localhost
         run: python3 -m unittest discover -s tests -v
 
   worker:
@@ -42,5 +55,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Install wrangler, the only test dependency
+        run: npm ci
       - name: Run the Worker tests
-        run: node --test tests/*.test.mjs
+        run: npm test

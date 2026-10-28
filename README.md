@@ -70,7 +70,14 @@ See [where to run it for free](docs/where-to-run-it-for-free.md) for how those t
 
 ## Tests
 
-The tests run offline. I fake Microsoft's sign-in and Graph on localhost, so they need no account. Run the script's tests with `python3 -m unittest discover -s tests -v` and the Worker's tests with `node --test tests/*.test.mjs` on Node 22. Both read `tests/schedule-cases.json`, so the script and the Worker keep the same schedule rules. GitHub Actions runs both on every push to `main` and on every pull request. The Worker's tests run its code under Node with an in-memory stand-in for Workers KV, so they do not cover differences in the Workers runtime itself. The 8 runs on Cloudflare described above are the check of the runtime.
+The tests use no fakes. They run the script and the Worker against the real Microsoft sign-in service and Graph, but they never sign in. The tokens they store are made up, so Microsoft refuses them, and the tests check what stay-green does with those real answers: the refusal mark, the cached access token, the schedule, and for the script a failed network. The one thing a test sets is the clock, in the script's schedule tests, so they can check daylight saving changes on fixed dates.
+
+- Run the script's tests with `STAY_GREEN_TEST_SSH_HOST=localhost python3 -m unittest discover -s tests -v`. The `login HOST` tests send the store command through a real SSH server on your own computer, and they skip when the variable is unset.
+- Run the Worker's tests with `npm ci` and then `npm test` on Node 22. They start the Worker in `wrangler dev`, the local Workers runtime, with a local KV namespace.
+
+GitHub Actions runs both on every push to `main` and on every pull request.
+
+Only a signed-in account can show the rest, so the tests leave it out. The runs on my own server and on Cloudflare described above show a sign-in, renewals that succeed, and setPresence. Nothing automated covers the out-of-office skip, the second schedule check before setPresence, or the refusal codes other than `invalid_grant`.
 
 ## License
 

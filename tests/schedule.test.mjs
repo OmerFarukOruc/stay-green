@@ -1,10 +1,11 @@
-// Contract: the schedule format of docs/reference.md. tests/schedule-cases.json is read by the Python tests too.
-// The Worker decides through its real scheduled handler: inside the schedule it reads the presence from Microsoft,
-// outside it makes no request, and a schedule it rejects throws before any request.
+// Contract: the schedule format of docs/reference.md, in the Worker. workerd runs on the real clock, so these tests
+// build each schedule around the current time instead of the fixed instants of tests/schedule-cases.json, which the
+// Python tests decide. Inside the schedule the Worker renews the made-up refresh token and Microsoft refuses it, which
+// leaves a refusal mark in KV; outside the schedule the run touches nothing.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { after, before, test } from "node:test";
-import { FakeKV, FakeMicrosoft, fire, freshWorker, sha256 } from "./harness.mjs";
+import { test } from "node:test";
+import { DAYS, MADE_UP_REFRESH_TOKEN, startWorker, zoneNow } from "./harness.mjs";
 
 const CASES = JSON.parse(readFileSync(new URL("./schedule-cases.json", import.meta.url), "utf8"));
 const ERROR_TEXT = {
@@ -14,46 +15,61 @@ const ERROR_TEXT = {
 	zone: "Invalid time zone specified",
 };
 
-const fake = new FakeMicrosoft();
-before(() => fake.start());
-after(() => fake.close());
-
-async function decide(t, { schedule, zone }, instant) {
-	t.mock.timers.setTime(Date.parse(instant));
-	fake.requests.length = 0;
-	const worker = await freshWorker();
-	const kv = new FakeKV({
-		"refresh-token": "RT-OLD",
-		cache: JSON.stringify({ hash: sha256("RT-OLD"), token: "AT-OLD", expires: Date.parse(instant) + 3_600_000 }),
-	});
-	await fire(worker, { TOKENS: kv, SCHEDULE: schedule, TIME_ZONE: zone });
-	return fake.to("/me/presence").length === 1;
+// One run of a Worker started with this schedule. It reports whether the run reached Microsoft.
+async function runOnce(setting) {
+	const worker = await startWorker(setting);
+	try {
+		await worker.kv.put("refresh-token", MADE_UP_REFRESH_TOKEN);
+		const result = await worker.run();
+		return { ...result, contacted: (await worker.kv.get("cache")) !== null };
+	} finally {
+		await worker.stop();
+	}
 }
 
-test("valid schedules decide each instant", async (t) => {
-	t.mock.timers.enable({ apis: ["Date"], now: 0 });
-	t.mock.method(globalThis, "fetch", fake.fetchToFake());
-	t.mock.method(console, "log", () => {});
-	for (const { name, at, ...setting } of CASES.valid) {
-		for (const [instant, expected] of at) {
-			// A schedule is parsed once per module, so each instant gets its own copy of the Worker.
-			assert.equal(await decide(t, setting, instant), expected, `${name} at ${instant}`);
-		}
-	}
+// The schedule rules for the minutes from `from` to `to`, counted from now in `zone`, split at midnight.
+function rules(zone, from, to) {
+	const first = zoneNow(zone, from);
+	const last = zoneNow(zone, to);
+	if (first.day === last.day) return `${first.day} ${first.time}-${last.time}`;
+	const rest = last.time === "00:00" ? "" : `; ${last.day} 00:00-${last.time}`;
+	return `${first.day} ${first.time}-24:00${rest}`;
+}
+
+const ZONE = "Asia/Kolkata"; // UTC+05:30, so a schedule read in UTC or in whole hours misses
+
+test("a range includes its start minute, read in TIME_ZONE", async () => {
+	const result = await runOnce({ schedule: rules(ZONE, 0, 20), zone: ZONE });
+	assert.match(result.text, /400 invalid_grant/);
+	assert.equal(result.contacted, true);
 });
 
-test("invalid schedules and zones are refused by the guard that owns them, before any request", async (t) => {
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-26T10:00:00Z") });
-	t.mock.method(globalThis, "fetch", fake.fetchToFake());
-	t.mock.method(console, "log", () => {});
+test("a range excludes its end minute", async () => {
+	const result = await runOnce({ schedule: rules(ZONE, -20, 0), zone: ZONE });
+	assert.equal(result.ok, true, result.text);
+	assert.equal(result.contacted, false);
+});
+
+test("a day other than today is outside the schedule", async () => {
+	const today = DAYS.indexOf(zoneNow(ZONE).day);
+	const result = await runOnce({ schedule: `${DAYS[(today + 3) % 7]} 00:00-24:00`, zone: ZONE });
+	assert.equal(result.ok, true, result.text);
+	assert.equal(result.contacted, false);
+});
+
+test("without TIME_ZONE the Worker reads the schedule in UTC", async () => {
+	const result = await runOnce({ schedule: rules("UTC", 0, 20), zone: "" });
+	assert.match(result.text, /400 invalid_grant/);
+	assert.equal(result.contacted, true);
+});
+
+test("invalid schedules and zones are refused by the guard that owns them, before any request", { concurrency: 5 }, async (t) => {
 	for (const { name, schedule, zone = "UTC", error } of CASES.invalid) {
-		fake.requests.length = 0;
-		const worker = await freshWorker();
-		await assert.rejects(
-			fire(worker, { TOKENS: new FakeKV({ "refresh-token": "RT-OLD" }), SCHEDULE: schedule, TIME_ZONE: zone }),
-			(thrown) => thrown.message.includes(ERROR_TEXT[error]),
-			name,
-		);
-		assert.deepEqual(fake.requests, [], name);
+		t.test(name, async () => {
+			const result = await runOnce({ schedule, zone });
+			assert.equal(result.ok, false);
+			assert.ok(result.text.includes(ERROR_TEXT[error]), result.text);
+			assert.equal(result.contacted, false);
+		});
 	}
 });
