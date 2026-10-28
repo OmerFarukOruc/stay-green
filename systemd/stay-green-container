@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs ../stay-green in a throwaway rootless Podman container from the official python:3.13-alpine image.
+# Runs ../stay-green in a throwaway rootless Podman container from the official python:3.14-alpine image.
 # The container sees only the script, read-only, and the sign-in folder, and it has no Linux capabilities.
 #   stay-green-container run      mark the status Available if now is in the schedule
 #   stay-green-container status   print the current Teams status
@@ -26,4 +26,4 @@ exec podman --events-backend=none run --rm --pull="$pull" --read-only --cap-drop
   -e STAY_GREEN_SCHEDULE -e STAY_GREEN_TIME_ZONE "${zone[@]}" \
   -v "$here/../stay-green:/stay-green:ro" \
   -v "$state:/root/.local/state/stay-green" \
-  docker.io/library/python:3.13-alpine python3 /stay-green "$@"
+  docker.io/library/python:3.14-alpine python3 /stay-green "$@"

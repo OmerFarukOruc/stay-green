@@ -2,7 +2,7 @@
 
 ## Commands
 
-`stay-green` is a single Python script that requires Python 3.9 or newer for `zoneinfo` and uses the standard library with no third-party packages.
+`stay-green` is a single Python script for Python 3.14 or newer, the version its tests run on. It uses the standard library with no third-party packages.
 
 | Command | Effect |
 |---|---|
@@ -19,7 +19,7 @@ Exit codes:
 | 1 | The command failed. An expected error prints one line that starts with `stay-green:`. An unexpected one prints a Python traceback. |
 | 64 | The arguments are wrong. The script prints `usage: stay-green login [HOST] \| stay-green run \| stay-green status`. |
 
-`systemd/stay-green-container run` and `systemd/stay-green-container status` execute those subcommands inside a rootless Podman container built on `docker.io/library/python:3.13-alpine`:
+`systemd/stay-green-container run` and `systemd/stay-green-container status` execute those subcommands inside a rootless Podman container built on `docker.io/library/python:3.14-alpine`:
 
 - The first run of each calendar day passes `--pull=newer` to check the registry for a newer image, falls back to the local image if the registry is unreachable, and records the check's timestamp in `.image-checked` in the state folder. Subsequent runs that day pass `--pull=missing` and pull an image if none exists on disk.
 - The container runs with a read-only root file system, all Linux capabilities dropped, `no-new-privileges`, SELinux label separation disabled for the container, and a 64 MB memory limit.

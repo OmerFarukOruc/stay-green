@@ -4,8 +4,8 @@ Run stay-green on a Linux machine that stays on during your working hours, such 
 
 You need:
 
-- A Linux box with systemd, `git`, and Python 3.9 or newer. The script uses the Python standard library with no third-party packages.
-- A computer with a browser, `git`, and Python 3.9 or newer for the initial sign-in. You can sign in on the box itself or from another computer that has `ssh` access to the box.
+- A Linux box with systemd, `git`, and Python 3.14 or newer. The script uses the Python standard library with no third-party packages. A box whose Python is older can [run it in a container](#run-it-in-a-container) instead, which brings its own Python.
+- A computer with a browser, `git`, and Python 3.14 or newer for the initial sign-in. You can sign in on the box itself or from another computer that has `ssh` access to the box.
 - A work or school Microsoft 365 account. Microsoft Graph does not allow an app to set the presence of a personal Microsoft account.
 
 Read [the risks](risks.md) before you start.
@@ -116,7 +116,7 @@ If the box has rootless Podman installed, you can isolate each run in a throwawa
 ExecStart=%h/stay-green/systemd/stay-green-container run
 ```
 
-Reload the unit configuration with `systemctl --user daemon-reload`. The wrapper runs the official `python:3.13-alpine` image and passes through your schedule settings and the host's time zone.
+Reload the unit configuration with `systemctl --user daemon-reload`. The wrapper runs the official `python:3.14-alpine` image and passes through your schedule settings and the host's time zone.
 
 ## Update or stop it
 

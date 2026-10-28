@@ -6,7 +6,7 @@ You need:
 
 - A Cloudflare account on the free plan or higher.
 - Node.js 22 or newer on your computer to run Wrangler, Cloudflare's command-line tool.
-- Python 3.9 or newer and a browser on your computer for the initial sign-in.
+- Python 3.14 or newer and a browser on your computer for the initial sign-in.
 - A work or school Microsoft 365 account. Microsoft Graph does not allow an app to set the presence of a personal Microsoft account.
 
 All commands below assume a Linux shell. Read [the risks](risks.md) before you start: a Worker renews tokens from Cloudflare's data centers, which Microsoft Entra Identity Protection can flag as a sign-in risk.

@@ -61,7 +61,7 @@ On 2026-10-27 I tested the Cloudflare Worker with my own sign-in across 8 consec
 
 Read [the risks](docs/risks.md) before you set it up. stay-green fakes your presence, leaves token renewals in your organization's sign-in logs, and stores a refresh token that can act as you.
 
-You need a work or school Microsoft 365 account and a computer with a browser and Python 3.9 or newer for the initial sign-in. Pick where the job runs:
+You need a work or school Microsoft 365 account and a computer with a browser and Python 3.14 or newer for the initial sign-in. Pick where the job runs:
 
 - [Run stay-green on a Linux box](docs/how-to-run-on-a-linux-box.md) if you have a Raspberry Pi, a home server, or a free Google Cloud VM.
 - [Run stay-green on Cloudflare Workers](docs/how-to-run-on-cloudflare-workers.md) if you have no machine that stays on.

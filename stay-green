@@ -15,8 +15,6 @@
 # every 4 minutes. run skips the call while Graph reports you out of office: automatic replies are on, or
 # a calendar event shows as Out of office. So a day off with either does not show Available.
 # https://learn.microsoft.com/en-us/graph/cloud-communications-manage-presence-state
-from __future__ import annotations
-
 import base64
 import contextlib
 import hashlib

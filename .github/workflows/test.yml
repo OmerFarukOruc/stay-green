@@ -14,20 +14,16 @@ defaults:
 
 jobs:
   python:
-    name: python ${{ matrix.python-version }}
+    name: python 3.14
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.9", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
       # The login HOST tests send the store command to this runner through a real SSH server.
       - name: Start an SSH server that accepts this runner's own key
         run: |
