@@ -1,0 +1,16 @@
+# Starts stay-green.service every 4 minutes. stay-green ends a run at once when now is outside
+# STAY_GREEN_SCHEDULE, which stay-green.service sets. Teams shows Away from about 10 minutes after the
+# last run inside the schedule, unless a Teams client is in use.
+#   enable:   systemctl --user enable --now stay-green.timer
+#   pause:    systemctl --user stop stay-green.timer   (it starts again at the next reboot)
+#   stop:     systemctl --user disable --now stay-green.timer
+[Unit]
+Description=Keep the Teams status Available in working hours
+
+[Timer]
+OnCalendar=*-*-* *:00/4:00
+AccuracySec=10s
+# No Persistent=: a run missed while the computer was off is of no use later.
+
+[Install]
+WantedBy=timers.target

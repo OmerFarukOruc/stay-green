@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+# Keeps a Microsoft Teams status Available through Microsoft Graph, so no Teams client has to run.
+#   stay-green login         sign in once in the browser; the sign-in is stored on this computer
+#   stay-green login HOST    sign in here and store the sign-in on HOST over SSH
+#   stay-green run           mark the status Available if now is in the schedule (stay-green.timer runs it
+#                            every 4 minutes)
+#   stay-green status        print the current status and whether now is in the schedule
+# STAY_GREEN_SCHEDULE sets the working hours, by default "Mon-Fri 09:00-18:00". A rule is days and time
+# ranges, and rules are separated by semicolons: "Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00".
+# A range ends before its end time. STAY_GREEN_TIME_ZONE names the IANA time zone of the schedule; without
+# it, the schedule uses this computer's time zone.
+# Graph keeps one presence session per app beside the Teams clients' sessions and shows the strongest:
+# Do not disturb, then Busy, then Available, then Away. A status you pick in Teams beats them all. Graph
+# marks an Available session inactive 5 minutes after the last call and Away after 10, so the timer calls
+# every 4 minutes. run skips the call while Graph reports you out of office: automatic replies are on, or
+# a calendar event shows as Out of office. So a day off with either does not show Available.
+# https://learn.microsoft.com/en-us/graph/cloud-communications-manage-presence-state
+import base64
+import contextlib
+import hashlib
+import http.client
+import http.server
+import json
+import os
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+import zoneinfo
+from datetime import datetime
+from pathlib import Path
+
+# Microsoft Graph Command Line Tools, the public client Microsoft Graph PowerShell signs in with. It accepts
+# http://localhost redirects, so no app registration is needed. setPresence takes the app's ID as session ID.
+CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+AUTHORITY = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+SCOPE = "offline_access https://graph.microsoft.com/Presence.ReadWrite"
+GRAPH = "https://graph.microsoft.com/v1.0"
+# Graph ends the session this long after the last call, so a few missed runs only fade the status.
+SESSION = "PT15M"
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Error codes of the sign-in service that only a new sign-in fixes. Any other failure, such as throttling,
+# a server error, a network error, or a proxy's error page, fails only that run, and the next run tries again.
+SIGN_IN_AGAIN = {"invalid_grant", "interaction_required", "consent_required", "invalid_client", "unauthorized_client"}
+# What login HOST runs on HOST, with the refresh token and a line break on its input. sh runs it, whatever the
+# login shell on HOST is. read fails when the connection drops before the line break that ends the token, so a cut
+# token never replaces the stored one. The new file replaces the old one in one rename, under the same lock that run
+# and status take. A new sign-in also drops the cached access token and the mark of a failed renewal.
+STORE_ON_HOST = ('umask 077 && d="${XDG_STATE_HOME:-$HOME/.local/state}/stay-green" && mkdir -p "$d" && chmod 700 "$d"'
+                 ' && IFS= read -r token && [ -n "$token" ] && exec 9>>"$d/lock" && flock 9'
+                 ' && t=$(mktemp "$d/.refresh-token.XXXXXX") && rm -f "$d/access-token" "$d/renewal-failed"'
+                 ' && { printf "%s\\n" "$token" > "$t" && sync && mv -f "$t" "$d/refresh-token"'
+                 ' || { rm -f "$t"; exit 1; }; }')
+
+
+class StayGreenError(Exception):
+    """An expected failure. main() prints it as one line that starts with stay-green: and exits with 1."""
+
+
+class RequestError(StayGreenError):
+    def __init__(self, status: int, code: str | None, reason: str) -> None:
+        super().__init__(f"{status} {code}: {reason}" if code else f"{status}: the answer has no error code")
+        self.status = status
+        self.code = code
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "stay-green"
+
+
+def schedule() -> list[list[tuple[str, str]]]:
+    """Reads STAY_GREEN_SCHEDULE into the time ranges of each weekday, Monday first."""
+    text = os.environ.get("STAY_GREEN_SCHEDULE") or "Mon-Fri 09:00-18:00"
+    ranges: list[list[tuple[str, str]]] = [[] for _ in DAYS]
+    # Only spaces, tabs, and line breaks count as blanks, the same as in worker/src/index.js.
+    for rule in filter(None, (part.strip(" \t\r\n") for part in text.split(";"))):
+        days, _, times = rule.partition(" ")
+        spans = [time_range(span) for span in times.replace(" ", "").split(",")]
+        for span in days.split(","):
+            for day in day_range(span):
+                ranges[day] += spans
+    return ranges
+
+
+def day_range(span: str) -> list[int]:
+    # Mon-Fri, Sat, or a range across the weekend such as Fri-Mon.
+    first, _, last = span.partition("-")
+    if first not in DAYS or (last or first) not in DAYS:
+        raise StayGreenError(f"unknown day in STAY_GREEN_SCHEDULE: {span!r}")
+    day, stop = DAYS.index(first), DAYS.index(last or first)
+    return [(day + step) % 7 for step in range((stop - day) % 7 + 1)]
+
+
+def time_range(span: str) -> tuple[str, str]:
+    # Times compare as text, so each one needs two-digit hours and minutes. 24:00 can end a range.
+    start, _, end = span.partition("-")
+    hhmm = r"([01][0-9]|2[0-3]):[0-5][0-9]"
+    if not (re.fullmatch(hhmm, start) and re.fullmatch(f"{hhmm}|24:00", end) and start < end):
+        raise StayGreenError(f"bad time range in STAY_GREEN_SCHEDULE: {span!r}")
+    return start, end
+
+
+def scheduled() -> bool:
+    zone = os.environ.get("STAY_GREEN_TIME_ZONE")
+    try:
+        now = datetime.now(zoneinfo.ZoneInfo(zone)) if zone else datetime.now()
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        raise StayGreenError(f"unknown time zone in STAY_GREEN_TIME_ZONE: {zone!r}") from None
+    current = now.strftime("%H:%M")
+    return any(start <= current < end for start, end in schedule()[now.weekday()])
+
+
+def request(url: str, token: str | None = None, form: dict | None = None, payload: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    body = None
+    if form is not None:
+        body = urllib.parse.urlencode(form).encode()
+    elif payload is not None:
+        body = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, body, headers), timeout=30) as response:
+            text = response.read()
+    except urllib.error.HTTPError as error:
+        try:
+            detail = json.loads(error.read())
+        except (OSError, ValueError, http.client.HTTPException):
+            detail = None
+        detail = detail if isinstance(detail, dict) else {}
+        # Graph nests its error in an object; the sign-in endpoint sends a code and a description.
+        err = detail.get("error")
+        if isinstance(err, dict):
+            code, reason = err.get("code"), err.get("message")
+        else:
+            code, reason = err, detail.get("error_description")
+        code = code if isinstance(code, str) else None
+        reason = reason if isinstance(reason, str) else ""
+        raise RequestError(error.code, code, reason.partition("\n")[0]) from None
+    except (OSError, http.client.HTTPException) as error:
+        # No answer: a DNS or connection error, a dropped connection, or a timeout.
+        raise RequestError(0, "unreachable", str(getattr(error, "reason", error))) from None
+    try:
+        answer = json.loads(text) if text else {}
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        raise RequestError(0, "not-json", "the answer is not a JSON object")
+    return answer
+
+
+def login(host: str | None) -> None:
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(16)
+    result: dict[str, str] = {}
+
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
+            if query.get("state") != state:
+                self.send_error(400)
+                return
+            result.update(query)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"stay-green: signed in. You can close this tab.\n")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    # A browser can open a connection and send nothing; without a timeout it would block the sign-in.
+    Redirect.timeout = 5
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+    redirect = f"http://localhost:{server.server_port}"
+    url = f"{AUTHORITY}/authorize?" + urllib.parse.urlencode({
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": redirect,
+        "scope": SCOPE,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "prompt": "select_account",
+    })
+    print(f"Sign in with your work account in the browser. If no tab opens, open:\n{url}", file=sys.stderr)
+    webbrowser.open(url)
+    deadline = time.monotonic() + 300
+    while not result:
+        server.timeout = deadline - time.monotonic()
+        if server.timeout <= 0:
+            raise StayGreenError("no sign-in within 5 minutes")
+        server.handle_request()
+    if "code" not in result:
+        raise StayGreenError(f"sign-in failed: {result.get('error')}: {result.get('error_description')}")
+    tokens = request(f"{AUTHORITY}/token", form={
+        "client_id": CLIENT_ID,
+        "grant_type": "authorization_code",
+        "code": result["code"],
+        "redirect_uri": redirect,
+        "code_verifier": verifier,
+        "scope": SCOPE,
+    })
+    if "Presence.ReadWrite" not in tokens.get("scope", ""):
+        raise StayGreenError(f"the sign-in did not grant Presence.ReadWrite: {tokens.get('scope')}")
+    if host is None:
+        folder = state_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        folder.chmod(0o700)
+        with locked(folder):
+            # Dropped first, so a sign-in that stops halfway leaves the old refresh token without stale state.
+            for name in ("access-token", "renewal-failed"):
+                (folder / name).unlink(missing_ok=True)
+            write_private(folder / "refresh-token", tokens["refresh_token"])
+        print(f"Stored the sign-in in {folder}. Test it with: {shlex.quote(os.path.abspath(sys.argv[0]))} status")
+        return
+    stored = subprocess.run(["ssh", "--", host, "sh -c " + shlex.quote(STORE_ON_HOST)],
+                            input=tokens["refresh_token"] + "\n", text=True, check=False)
+    if stored.returncode != 0:
+        raise StayGreenError(f"could not store the sign-in on {host}")
+    print(f"Stored the sign-in on {host}. Test it there with the status command of stay-green.")
+
+
+@contextlib.contextmanager
+def locked(folder: Path):
+    # A renewal replaces both stored tokens, and a sign-in replaces the refresh token, so they take turns. Without
+    # the lock, a run that renews during a sign-in writes the old account's tokens over the new sign-in.
+    # fcntl exists only on Unix. login HOST never takes this lock, so it also runs on Windows.
+    import fcntl
+
+    try:
+        file = open(folder / "lock", "a")  # noqa: SIM115, the with below closes it
+    except OSError as error:
+        raise StayGreenError(f"cannot open {folder / 'lock'}: {error.strerror}") from None
+    with file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        yield
+
+
+def write_private(path: Path, text: str) -> None:
+    # mkstemp makes a private file with a unique name. fsync puts the new content on disk before the rename
+    # replaces the old file, so a power loss leaves one of the two whole.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def access_token(state: Path) -> str:
+    refresh = state / "refresh-token"
+    no_sign_in = f"no sign-in in {refresh}; sign in with: stay-green login"
+    if not state.is_dir():
+        raise StayGreenError(no_sign_in)
+    with locked(state):
+        cached = state / "access-token"
+        try:
+            entry = json.loads(cached.read_text())
+            # Renew 5 minutes early, so a token never expires between this check and the Graph calls.
+            if entry["expires"] > time.time() + 300:
+                return entry["token"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # No cached access token, or a damaged one: renew below.
+        # Each renewal is a sign-in in your organization's logs, so a rejected sign-in is not retried every run.
+        failed = state / "renewal-failed"
+        if failed.exists():
+            reason = failed.read_text().strip()
+            raise StayGreenError(f"the sign-in was rejected earlier ({reason}); sign in again")
+        if not refresh.exists():
+            raise StayGreenError(no_sign_in)
+        try:
+            tokens = request(f"{AUTHORITY}/token", form={
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh.read_text().strip(),
+                "scope": SCOPE,
+            })
+        except RequestError as error:
+            if error.code in SIGN_IN_AGAIN:
+                failed.write_text(f"{error}\n")
+            raise
+        # Each renewal returns a new refresh token. A refresh token expires after 90 days without use.
+        write_private(refresh, tokens["refresh_token"])
+        expires = time.time() + tokens["expires_in"]
+        write_private(cached, json.dumps({"token": tokens["access_token"], "expires": expires}))
+        return tokens["access_token"]
+
+
+def out_of_office(presence: dict) -> bool:
+    return bool(presence.get("outOfOfficeSettings", {}).get("isOutOfOffice"))
+
+
+def graph(path: str, payload: dict | None = None) -> dict:
+    state = state_dir()
+    try:
+        return request(f"{GRAPH}{path}", token=access_token(state), payload=payload)
+    except RequestError as error:
+        # Graph rejected the access token, such as after a revocation, so the next run renews it.
+        if error.status == 401:
+            (state / "access-token").unlink(missing_ok=True)
+        raise
+
+
+def status() -> None:
+    inside = "inside" if scheduled() else "outside"
+    presence = graph("/me/presence")
+    away = ", out of office" if out_of_office(presence) else ""
+    print(f"{presence.get('availability')} / {presence.get('activity')}{away}")
+    print(f"now is {inside} the schedule")
+
+
+def run() -> None:
+    # The timer starts a run every 4 minutes around the clock; a run outside the schedule does nothing.
+    if not scheduled():
+        return
+    presence = graph("/me/presence")
+    if out_of_office(presence):
+        print(f"out of office; left the status at {presence.get('availability')}")
+        return
+    # A run that waited on Microsoft past the end of the schedule must not stretch it.
+    if not scheduled():
+        print(f"the schedule ended during this run; left the status at {presence.get('availability')}")
+        return
+    graph(f"/users/{presence['id']}/presence/setPresence", payload={
+        "sessionId": CLIENT_ID,
+        "availability": "Available",
+        "activity": "Available",
+        "expirationDuration": SESSION,
+    })
+    print(f"marked Available; the status was {presence.get('availability')}")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    try:
+        if args[:1] == ["login"] and len(args) <= 2:
+            login(args[1] if len(args) == 2 else None)
+        elif args == ["run"]:
+            run()
+        elif args == ["status"]:
+            status()
+        else:
+            print("usage: stay-green login [HOST] | stay-green run | stay-green status", file=sys.stderr)
+            raise SystemExit(64)
+    except StayGreenError as error:
+        raise SystemExit(f"stay-green: {error}") from None
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    main()

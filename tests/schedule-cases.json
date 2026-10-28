@@ -1,0 +1,303 @@
+{
+	"_about": "Schedule cases at fixed instants for tests/test_schedule.py. tests/schedule.test.mjs reads only the invalid cases, so the script and the Worker refuse the same input. workerd runs on the real clock, which a test cannot set to these instants. The expected values come from docs/reference.md (Schedule) and the calendar, not from either implementation. 2026-10-26 is a Monday. New York changes to summer time on 2026-03-08 at 07:00Z and back on 2026-11-01 at 06:00Z.",
+	"_errors": "day, time, and zone name the guard that must reject the input. docs/reference.md (Errors) gives the message of each: 'unknown day in STAY_GREEN_SCHEDULE' or 'SCHEDULE', 'bad time range in ...', and 'unknown time zone in STAY_GREEN_TIME_ZONE' or 'Invalid time zone specified' in the Worker.",
+	"valid": [
+		{
+			"name": "a range includes its start minute and excludes its end minute",
+			"schedule": "Mon-Fri 09:00-18:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T08:59:59Z", false],
+				["2026-10-26T09:00:00Z", true],
+				["2026-10-26T17:59:59Z", true],
+				["2026-10-26T18:00:00Z", false],
+				["2026-10-30T17:59:00Z", true],
+				["2026-10-31T12:00:00Z", false],
+				["2026-11-01T12:00:00Z", false]
+			]
+		},
+		{
+			"name": "24:00 ends a range at midnight",
+			"schedule": "Mon 18:00-24:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T17:59:00Z", false],
+				["2026-10-26T18:00:00Z", true],
+				["2026-10-26T23:59:59Z", true],
+				["2026-10-27T00:00:00Z", false]
+			]
+		},
+		{
+			"name": "a range can start at 00:00",
+			"schedule": "Tue 00:00-01:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T23:59:00Z", false],
+				["2026-10-27T00:00:00Z", true],
+				["2026-10-27T00:59:00Z", true],
+				["2026-10-27T01:00:00Z", false]
+			]
+		},
+		{
+			"name": "00:00-24:00 on every day covers the whole week",
+			"schedule": "Mon-Sun 00:00-24:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T00:00:00Z", true],
+				["2026-10-31T03:00:00Z", true],
+				["2026-11-01T23:59:59Z", true]
+			]
+		},
+		{
+			"name": "a day range wraps across the weekend",
+			"schedule": "Fri-Mon 10:00-11:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-30T10:30:00Z", true],
+				["2026-10-30T11:00:00Z", false],
+				["2026-10-31T10:30:00Z", true],
+				["2026-11-01T10:30:00Z", true],
+				["2026-11-02T10:30:00Z", true],
+				["2026-11-03T10:30:00Z", false],
+				["2026-10-29T10:30:00Z", false]
+			]
+		},
+		{
+			"name": "Sun-Thu runs from Sunday",
+			"schedule": "Sun-Thu 08:00-17:00",
+			"zone": "UTC",
+			"at": [
+				["2026-11-01T08:00:00Z", true],
+				["2026-10-29T16:59:00Z", true],
+				["2026-10-30T10:00:00Z", false],
+				["2026-10-31T10:00:00Z", false]
+			]
+		},
+		{
+			"name": "commas join days, day ranges, and time ranges",
+			"schedule": "Mon,Wed,Fri-Sat 09:00-10:00, 11:00-12:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T09:30:00Z", true],
+				["2026-10-26T10:30:00Z", false],
+				["2026-10-26T11:30:00Z", true],
+				["2026-10-26T12:00:00Z", false],
+				["2026-10-27T09:30:00Z", false],
+				["2026-10-28T11:59:00Z", true],
+				["2026-10-29T09:30:00Z", false],
+				["2026-10-30T09:00:00Z", true],
+				["2026-10-31T11:00:00Z", true],
+				["2026-11-01T09:30:00Z", false]
+			]
+		},
+		{
+			"name": "a lunch break and a short Friday from the reference example",
+			"schedule": "Mon-Thu 09:00-12:30,13:30-18:00; Fri 09:00-15:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T12:29:00Z", true],
+				["2026-10-26T12:30:00Z", false],
+				["2026-10-26T13:29:00Z", false],
+				["2026-10-26T13:30:00Z", true],
+				["2026-10-29T17:59:00Z", true],
+				["2026-10-30T14:59:00Z", true],
+				["2026-10-30T15:00:00Z", false]
+			]
+		},
+		{
+			"name": "rules that match the same day combine their ranges",
+			"schedule": "Mon 09:00-10:00; Mon 14:00-15:00; Mon 09:30-11:00",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T09:15:00Z", true],
+				["2026-10-26T10:30:00Z", true],
+				["2026-10-26T11:00:00Z", false],
+				["2026-10-26T12:00:00Z", false],
+				["2026-10-26T14:30:00Z", true]
+			]
+		},
+		{
+			"name": "spaces, tabs, and line breaks around rules and inside a time range are blanks",
+			"schedule": "  Mon 09:00-10:00 ;\n\tTue  09:00 - 10:00;\r\n",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T09:30:00Z", true],
+				["2026-10-27T09:30:00Z", true],
+				["2026-10-28T09:30:00Z", false]
+			]
+		},
+		{
+			"name": "empty rules between semicolons are skipped",
+			"schedule": ";;Mon 09:00-10:00;;",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T09:30:00Z", true],
+				["2026-10-27T09:30:00Z", false]
+			]
+		},
+		{
+			"name": "a schedule of blanks has no range, so now is never inside",
+			"schedule": " \n",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T10:00:00Z", false]
+			]
+		},
+		{
+			"name": "an empty schedule means Mon-Fri 09:00-18:00",
+			"schedule": "",
+			"zone": "UTC",
+			"at": [
+				["2026-10-26T10:00:00Z", true],
+				["2026-10-26T18:00:00Z", false],
+				["2026-10-31T10:00:00Z", false]
+			]
+		},
+		{
+			"name": "the weekday and the time are read in the zone, ahead of UTC",
+			"schedule": "Tue 05:00-06:00",
+			"zone": "Asia/Tokyo",
+			"at": [
+				["2026-10-26T20:00:00Z", true],
+				["2026-10-26T21:00:00Z", false],
+				["2026-10-27T20:00:00Z", false]
+			]
+		},
+		{
+			"name": "a zone with a half-hour offset",
+			"schedule": "Mon 09:00-10:00",
+			"zone": "Asia/Kolkata",
+			"at": [
+				["2026-10-26T03:29:00Z", false],
+				["2026-10-26T03:30:00Z", true],
+				["2026-10-26T04:29:00Z", true],
+				["2026-10-26T04:30:00Z", false]
+			]
+		},
+		{
+			"name": "the shipped zone Europe/Istanbul is UTC+3 all year",
+			"schedule": "Mon-Fri 09:00-18:00",
+			"zone": "Europe/Istanbul",
+			"at": [
+				["2026-10-26T05:59:00Z", false],
+				["2026-10-26T06:00:00Z", true],
+				["2026-10-26T14:59:00Z", true],
+				["2026-10-26T15:00:00Z", false]
+			]
+		},
+		{
+			"name": "New York working hours before and after the 2026-03-08 change to summer time",
+			"schedule": "Mon-Fri 09:00-17:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-03-06T13:59:00Z", false],
+				["2026-03-06T14:00:00Z", true],
+				["2026-03-06T21:59:00Z", true],
+				["2026-03-06T22:00:00Z", false],
+				["2026-03-09T12:59:00Z", false],
+				["2026-03-09T13:00:00Z", true],
+				["2026-03-09T20:59:00Z", true],
+				["2026-03-09T21:00:00Z", false]
+			]
+		},
+		{
+			"name": "New York working hours before and after the 2026-11-01 change back to winter time",
+			"schedule": "Mon-Fri 09:00-17:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-10-30T12:59:00Z", false],
+				["2026-10-30T13:00:00Z", true],
+				["2026-10-30T20:59:00Z", true],
+				["2026-10-30T21:00:00Z", false],
+				["2026-11-02T13:59:00Z", false],
+				["2026-11-02T14:00:00Z", true],
+				["2026-11-02T21:59:00Z", true],
+				["2026-11-02T22:00:00Z", false]
+			]
+		},
+		{
+			"name": "the hour after the spring change starts at 03:00 summer time",
+			"schedule": "Sun 03:00-04:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-03-08T06:59:00Z", false],
+				["2026-03-08T07:00:00Z", true],
+				["2026-03-08T07:59:00Z", true],
+				["2026-03-08T08:00:00Z", false]
+			]
+		},
+		{
+			"name": "a range inside the skipped hour 02:00-03:00 is never inside",
+			"schedule": "Sun 02:00-03:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-03-08T06:30:00Z", false],
+				["2026-03-08T06:59:00Z", false],
+				["2026-03-08T07:00:00Z", false],
+				["2026-03-08T07:30:00Z", false]
+			]
+		},
+		{
+			"name": "the repeated hour 01:00-02:00 on 2026-11-01 is inside both times",
+			"schedule": "Sun 01:00-02:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-11-01T04:59:00Z", false],
+				["2026-11-01T05:00:00Z", true],
+				["2026-11-01T05:59:00Z", true],
+				["2026-11-01T06:00:00Z", true],
+				["2026-11-01T06:59:00Z", true],
+				["2026-11-01T07:00:00Z", false]
+			]
+		},
+		{
+			"name": "Sunday evening in New York is already Monday in UTC",
+			"schedule": "Sun 20:00-22:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-03-08T23:59:00Z", false],
+				["2026-03-09T00:00:00Z", true],
+				["2026-03-09T01:59:00Z", true],
+				["2026-03-09T02:00:00Z", false]
+			]
+		},
+		{
+			"name": "midnight in a zone that changes its offset reads as 00:00",
+			"schedule": "Mon 00:00-01:00",
+			"zone": "America/New_York",
+			"at": [
+				["2026-11-02T04:59:00Z", false],
+				["2026-11-02T05:00:00Z", true],
+				["2026-11-02T05:59:00Z", true],
+				["2026-11-02T06:00:00Z", false]
+			]
+		}
+	],
+	"invalid": [
+		{ "name": "hour without a leading zero", "schedule": "Mon-Fri 9:00-18:00", "error": "time" },
+		{ "name": "end after 24:00", "schedule": "Mon-Fri 09:00-24:01", "error": "time" },
+		{ "name": "24:00 as a start", "schedule": "Mon 24:00-24:00", "error": "time" },
+		{ "name": "minute 60", "schedule": "Mon 09:60-10:00", "error": "time" },
+		{ "name": "hour 25 as an end", "schedule": "Mon 09:00-25:00", "error": "time" },
+		{ "name": "end before start", "schedule": "Mon-Fri 18:00-09:00", "error": "time" },
+		{ "name": "end equal to start", "schedule": "Mon 09:00-09:00", "error": "time" },
+		{ "name": "a rule without times", "schedule": "Mon-Fri", "error": "time" },
+		{ "name": "a time without an end", "schedule": "Mon-Fri 09:00", "error": "time" },
+		{ "name": "a third part in a time range", "schedule": "Mon 09:00-18:00-19:00", "error": "time" },
+		{ "name": "an en dash in a time range", "schedule": "Mon 09:00–10:00", "error": "time" },
+		{ "name": "a space instead of a comma between time ranges", "schedule": "Mon 09:00-10:00 11:00-12:00", "error": "time" },
+		{ "name": "a trailing comma after a time range", "schedule": "Mon 09:00-10:00,", "error": "time" },
+		{ "name": "a line break inside a time list", "schedule": "Mon 09:00-10:00,\n11:00-12:00", "error": "time" },
+		{ "name": "a no-break space at the end of a rule is not a blank", "schedule": "Mon 09:00-10:00\u00a0", "error": "time" },
+		{ "name": "a space inside the day list", "schedule": "Mon, Wed 09:00-10:00", "error": "time" },
+		{ "name": "a long day name", "schedule": "Monday 09:00-10:00", "error": "day" },
+		{ "name": "a day name in lower case", "schedule": "mon 09:00-10:00", "error": "day" },
+		{ "name": "an unknown day at the end of a range", "schedule": "Mon-Xyz 09:00-10:00", "error": "day" },
+		{ "name": "three parts in a day range", "schedule": "Mon-Fri-Sat 09:00-10:00", "error": "day" },
+		{ "name": "an empty day in a day list", "schedule": ",Mon 09:00-10:00", "error": "day" },
+		{ "name": "a tab instead of the space after the days", "schedule": "Mon\t09:00-10:00", "error": "time" },
+		{ "name": "one bad rule rejects the whole schedule", "schedule": "Mon 09:00-10:00;Foo 09:00-10:00", "error": "day" },
+		{ "name": "an unknown time zone", "schedule": "Mon-Fri 09:00-18:00", "zone": "Mars/Base", "error": "zone" },
+		{ "name": "a time zone that is not a name", "schedule": "Mon-Fri 09:00-18:00", "zone": "Not a zone", "error": "zone" }
+	]
+}
